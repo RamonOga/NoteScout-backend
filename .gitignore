@@ -8,6 +8,8 @@ backend/.gradle/
 backend/build/
 backend/out/
 backend/bin/
+# Служебный каталог компилятора Kotlin (создаёт Gradle)
+.kotlin/
 *.class
 *.jar
 !backend/gradle/wrapper/gradle-wrapper.jar
@@ -37,3 +39,4 @@ mobile/android/.gradle/
 backups/
 *.dump
 *.dump.sha256
+*.dump.counts

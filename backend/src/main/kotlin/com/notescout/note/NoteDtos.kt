@@ -44,7 +44,7 @@ data class NoteUpdateRequest(
     val url: String? = null,
 
     @field:Size(max = 20, message = "Не более 20 тегов на запись")
-    val tags: List<@Size(max = 64, message = "Тег не длиннее 64 символов")>? = null,
+    val tags: List<@Size(max = 64, message = "Тег не длиннее 64 символов") String>? = null,
 
     @field:Schema(description = "true — в архив, false — вернуть из архива")
     val archived: Boolean? = null,

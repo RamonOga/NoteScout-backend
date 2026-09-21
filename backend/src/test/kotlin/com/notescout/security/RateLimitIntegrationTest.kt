@@ -6,8 +6,6 @@ import org.springframework.boot.test.context.SpringBootTest
 import org.springframework.http.MediaType
 import org.springframework.test.context.TestPropertySource
 import org.springframework.test.web.servlet.post
-import org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath
-import org.springframework.test.web.servlet.result.MockMvcResultMatchers.status
 
 /**
  * Лимит частоты включается только для этого класса: свойство создаёт
@@ -32,16 +30,20 @@ class RateLimitIntegrationTest : IntegrationTestBase() {
         repeat(3) {
             mockMvc.post("/api/v1/auth/login") {
                 contentType = MediaType.APPLICATION_JSON
-                content = body
+                this.content = body
             }
-                .andExpect(status().isUnauthorized)
+                .andExpect {
+                    status { isUnauthorized() }
+                }
         }
 
         mockMvc.post("/api/v1/auth/login") {
             contentType = MediaType.APPLICATION_JSON
-            content = body
+            this.content = body
         }
-            .andExpect(status().isTooManyRequests)
-            .andExpect(jsonPath("$.code").value("RATE_LIMIT_EXCEEDED"))
+            .andExpect {
+                status { isTooManyRequests() }
+                jsonPath("$.code") { value("RATE_LIMIT_EXCEEDED") }
+            }
     }
 }

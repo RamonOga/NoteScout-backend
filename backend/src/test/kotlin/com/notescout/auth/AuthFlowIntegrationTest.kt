@@ -7,8 +7,6 @@ import org.springframework.http.MediaType
 import org.springframework.test.web.servlet.delete
 import org.springframework.test.web.servlet.get
 import org.springframework.test.web.servlet.post
-import org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath
-import org.springframework.test.web.servlet.result.MockMvcResultMatchers.status
 
 @SpringBootTest
 class AuthFlowIntegrationTest : IntegrationTestBase() {
@@ -19,7 +17,7 @@ class AuthFlowIntegrationTest : IntegrationTestBase() {
 
         mockMvc.post("/api/v1/auth/register") {
             contentType = MediaType.APPLICATION_JSON
-            content = json(
+            this.content = json(
                 mapOf(
                     "email" to email,
                     "password" to DEFAULT_PASSWORD,
@@ -27,13 +25,15 @@ class AuthFlowIntegrationTest : IntegrationTestBase() {
                 )
             )
         }
-            .andExpect(status().isCreated)
-            .andExpect(jsonPath("$.accessToken").isNotEmpty)
-            .andExpect(jsonPath("$.refreshToken").isNotEmpty)
-            .andExpect(jsonPath("$.tokenType").value("Bearer"))
-            .andExpect(jsonPath("$.expiresIn").isNumber)
-            .andExpect(jsonPath("$.user.email").value(email.lowercase()))
-            .andExpect(jsonPath("$.user.displayName").value("Иван"))
+            .andExpect {
+                status { isCreated() }
+                jsonPath("$.accessToken") { isNotEmpty() }
+                jsonPath("$.refreshToken") { isNotEmpty() }
+                jsonPath("$.tokenType") { value("Bearer") }
+                jsonPath("$.expiresIn") { isNumber() }
+                jsonPath("$.user.email") { value(email.lowercase()) }
+                jsonPath("$.user.displayName") { value("Иван") }
+            }
     }
 
     @Test
@@ -43,7 +43,7 @@ class AuthFlowIntegrationTest : IntegrationTestBase() {
 
         mockMvc.post("/api/v1/auth/register") {
             contentType = MediaType.APPLICATION_JSON
-            content = json(
+            this.content = json(
                 mapOf(
                     "email" to email.uppercase(),
                     "password" to DEFAULT_PASSWORD,
@@ -51,15 +51,17 @@ class AuthFlowIntegrationTest : IntegrationTestBase() {
                 )
             )
         }
-            .andExpect(status().isConflict)
-            .andExpect(jsonPath("$.code").value("CONFLICT"))
+            .andExpect {
+                status { isConflict() }
+                jsonPath("$.code") { value("CONFLICT") }
+            }
     }
 
     @Test
     fun `короткий пароль и некорректный email не проходят валидацию`() {
         mockMvc.post("/api/v1/auth/register") {
             contentType = MediaType.APPLICATION_JSON
-            content = json(
+            this.content = json(
                 mapOf(
                     "email" to "не-email",
                     "password" to "123",
@@ -67,9 +69,11 @@ class AuthFlowIntegrationTest : IntegrationTestBase() {
                 )
             )
         }
-            .andExpect(status().isBadRequest)
-            .andExpect(jsonPath("$.code").value("VALIDATION_ERROR"))
-            .andExpect(jsonPath("$.details").isArray)
+            .andExpect {
+                status { isBadRequest() }
+                jsonPath("$.code") { value("VALIDATION_ERROR") }
+                jsonPath("$.details") { isArray() }
+            }
     }
 
     @Test
@@ -79,27 +83,33 @@ class AuthFlowIntegrationTest : IntegrationTestBase() {
 
         mockMvc.post("/api/v1/auth/login") {
             contentType = MediaType.APPLICATION_JSON
-            content = json(mapOf("email" to email, "password" to DEFAULT_PASSWORD))
+            this.content = json(mapOf("email" to email, "password" to DEFAULT_PASSWORD))
         }
-            .andExpect(status().isOk)
-            .andExpect(jsonPath("$.accessToken").isNotEmpty)
+            .andExpect {
+                status { isOk() }
+                jsonPath("$.accessToken") { isNotEmpty() }
+            }
 
         mockMvc.post("/api/v1/auth/login") {
             contentType = MediaType.APPLICATION_JSON
-            content = json(mapOf("email" to email, "password" to "неверный-пароль"))
+            this.content = json(mapOf("email" to email, "password" to "неверный-пароль"))
         }
-            .andExpect(status().isUnauthorized)
-            .andExpect(jsonPath("$.code").value("UNAUTHORIZED"))
+            .andExpect {
+                status { isUnauthorized() }
+                jsonPath("$.code") { value("UNAUTHORIZED") }
+            }
     }
 
     @Test
     fun `вход с незарегистрированным email даёт ту же ошибку, что и неверный пароль`() {
         mockMvc.post("/api/v1/auth/login") {
             contentType = MediaType.APPLICATION_JSON
-            content = json(mapOf("email" to uniqueEmail(), "password" to DEFAULT_PASSWORD))
+            this.content = json(mapOf("email" to uniqueEmail(), "password" to DEFAULT_PASSWORD))
         }
-            .andExpect(status().isUnauthorized)
-            .andExpect(jsonPath("$.message").value("Неверный email или пароль"))
+            .andExpect {
+                status { isUnauthorized() }
+                jsonPath("$.message") { value("Неверный email или пароль") }
+            }
     }
 
     @Test
@@ -109,11 +119,15 @@ class AuthFlowIntegrationTest : IntegrationTestBase() {
         mockMvc.get("/api/v1/users/me") {
             header("Authorization", bearer(tokens.accessToken))
         }
-            .andExpect(status().isOk)
-            .andExpect(jsonPath("$.email").value(tokens.email))
+            .andExpect {
+                status { isOk() }
+                jsonPath("$.email") { value(tokens.email) }
+            }
 
         mockMvc.get("/api/v1/users/me")
-            .andExpect(status().isUnauthorized)
+            .andExpect {
+                status { isUnauthorized() }
+            }
     }
 
     @Test
@@ -122,10 +136,12 @@ class AuthFlowIntegrationTest : IntegrationTestBase() {
 
         val refreshed = mockMvc.post("/api/v1/auth/refresh") {
             contentType = MediaType.APPLICATION_JSON
-            content = json(mapOf("refreshToken" to tokens.refreshToken))
+            this.content = json(mapOf("refreshToken" to tokens.refreshToken))
         }
-            .andExpect(status().isOk)
-            .andExpect(jsonPath("$.refreshToken").isNotEmpty)
+            .andExpect {
+                status { isOk() }
+                jsonPath("$.refreshToken") { isNotEmpty() }
+            }
             .andReturn()
 
         val newRefreshToken = objectMapper
@@ -135,16 +151,20 @@ class AuthFlowIntegrationTest : IntegrationTestBase() {
         // Повторное использование уже отозванного токена — признак кражи.
         mockMvc.post("/api/v1/auth/refresh") {
             contentType = MediaType.APPLICATION_JSON
-            content = json(mapOf("refreshToken" to tokens.refreshToken))
+            this.content = json(mapOf("refreshToken" to tokens.refreshToken))
         }
-            .andExpect(status().isUnauthorized)
+            .andExpect {
+                status { isUnauthorized() }
+            }
 
         // После этого отзываются ВСЕ токены пользователя, включая только что выданный.
         mockMvc.post("/api/v1/auth/refresh") {
             contentType = MediaType.APPLICATION_JSON
-            content = json(mapOf("refreshToken" to newRefreshToken))
+            this.content = json(mapOf("refreshToken" to newRefreshToken))
         }
-            .andExpect(status().isUnauthorized)
+            .andExpect {
+                status { isUnauthorized() }
+            }
     }
 
     @Test
@@ -153,15 +173,19 @@ class AuthFlowIntegrationTest : IntegrationTestBase() {
 
         mockMvc.post("/api/v1/auth/logout") {
             contentType = MediaType.APPLICATION_JSON
-            content = json(mapOf("refreshToken" to tokens.refreshToken))
+            this.content = json(mapOf("refreshToken" to tokens.refreshToken))
         }
-            .andExpect(status().isNoContent)
+            .andExpect {
+                status { isNoContent() }
+            }
 
         mockMvc.post("/api/v1/auth/refresh") {
             contentType = MediaType.APPLICATION_JSON
-            content = json(mapOf("refreshToken" to tokens.refreshToken))
+            this.content = json(mapOf("refreshToken" to tokens.refreshToken))
         }
-            .andExpect(status().isUnauthorized)
+            .andExpect {
+                status { isUnauthorized() }
+            }
     }
 
     @Test
@@ -170,9 +194,11 @@ class AuthFlowIntegrationTest : IntegrationTestBase() {
 
         val secondSession = mockMvc.post("/api/v1/auth/login") {
             contentType = MediaType.APPLICATION_JSON
-            content = json(mapOf("email" to tokens.email, "password" to DEFAULT_PASSWORD))
+            this.content = json(mapOf("email" to tokens.email, "password" to DEFAULT_PASSWORD))
         }
-            .andExpect(status().isOk)
+            .andExpect {
+                status { isOk() }
+            }
             .andReturn()
 
         val secondRefresh = objectMapper
@@ -182,23 +208,31 @@ class AuthFlowIntegrationTest : IntegrationTestBase() {
         mockMvc.post("/api/v1/auth/logout-all") {
             header("Authorization", bearer(tokens.accessToken))
         }
-            .andExpect(status().isNoContent)
+            .andExpect {
+                status { isNoContent() }
+            }
 
         listOf(tokens.refreshToken, secondRefresh).forEach { token ->
             mockMvc.post("/api/v1/auth/refresh") {
                 contentType = MediaType.APPLICATION_JSON
-                content = json(mapOf("refreshToken" to token))
+                this.content = json(mapOf("refreshToken" to token))
             }
-                .andExpect(status().isUnauthorized)
+                .andExpect {
+                    status { isUnauthorized() }
+                }
         }
     }
 
     @Test
     fun `неизвестный путь под защитой требует авторизации`() {
         mockMvc.get("/api/v1/notes")
-            .andExpect(status().isUnauthorized)
+            .andExpect {
+                status { isUnauthorized() }
+            }
 
         mockMvc.delete("/api/v1/notes/00000000-0000-0000-0000-000000000000")
-            .andExpect(status().isUnauthorized)
+            .andExpect {
+                status { isUnauthorized() }
+            }
     }
 }

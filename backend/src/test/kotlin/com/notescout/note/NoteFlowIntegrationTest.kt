@@ -4,12 +4,11 @@ import com.notescout.IntegrationTestBase
 import org.junit.jupiter.api.Test
 import org.springframework.boot.test.context.SpringBootTest
 import org.springframework.http.MediaType
+import org.springframework.test.web.servlet.ResultActionsDsl
 import org.springframework.test.web.servlet.delete
 import org.springframework.test.web.servlet.get
 import org.springframework.test.web.servlet.patch
 import org.springframework.test.web.servlet.post
-import org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath
-import org.springframework.test.web.servlet.result.MockMvcResultMatchers.status
 import java.util.UUID
 
 @SpringBootTest
@@ -22,18 +21,23 @@ class NoteFlowIntegrationTest : IntegrationTestBase() {
         content: String? = null,
         url: String? = null,
         tags: List<String> = emptyList(),
-    ) = mockMvc.post("/api/v1/notes") {
-        header("Authorization", bearer(token))
-        contentType = MediaType.APPLICATION_JSON
-        content = json(
-            buildMap {
-                put("title", title)
-                type?.let { put("type", it) }
-                content?.let { put("content", it) }
-                url?.let { put("url", it) }
-                put("tags", tags)
-            }
-        )
+    ): ResultActionsDsl {
+        // JSON собирается до входа в DSL-лямбду: внутри неё параметр `content`
+        // затенял бы одноимённое свойство MockHttpServletRequestDsl, и в тело
+        // запроса попал бы не тот JSON.
+        val payload = buildMap {
+            put("title", title)
+            type?.let { put("type", it) }
+            content?.let { put("content", it) }
+            url?.let { put("url", it) }
+            put("tags", tags)
+        }
+
+        return mockMvc.post("/api/v1/notes") {
+            header("Authorization", bearer(token))
+            this.contentType = MediaType.APPLICATION_JSON
+            this.content = json(payload)
+        }
     }
 
     private fun noteIdOf(result: org.springframework.test.web.servlet.MvcResult): String =
@@ -50,13 +54,15 @@ class NoteFlowIntegrationTest : IntegrationTestBase() {
             // "Работа" и " работа " должны схлопнуться в один тег
             tags = listOf("Работа", "  работа ", "идеи"),
         )
-            .andExpect(status().isCreated)
-            .andExpect(jsonPath("$.type").value("TEXT"))
-            .andExpect(jsonPath("$.title").value("Планы на неделю"))
-            .andExpect(jsonPath("$.content").value("Написать план разработки"))
-            .andExpect(jsonPath("$.tags.length()").value(2))
-            .andExpect(jsonPath("$.tags[0]").value("Работа"))
-            .andExpect(jsonPath("$.tags[1]").value("идеи"))
+            .andExpect {
+                status { isCreated() }
+                jsonPath("$.type") { value("TEXT") }
+                jsonPath("$.title") { value("Планы на неделю") }
+                jsonPath("$.content") { value("Написать план разработки") }
+                jsonPath("$.tags.length()") { value(2) }
+                jsonPath("$.tags[0]") { value("Работа") }
+                jsonPath("$.tags[1]") { value("идеи") }
+            }
     }
 
     @Test
@@ -64,8 +70,10 @@ class NoteFlowIntegrationTest : IntegrationTestBase() {
         val tokens = registerUser()
 
         createNote(token = tokens.accessToken, title = "Spring", type = "LINK")
-            .andExpect(status().isBadRequest)
-            .andExpect(jsonPath("$.code").value("BAD_REQUEST"))
+            .andExpect {
+                status { isBadRequest() }
+                jsonPath("$.code") { value("BAD_REQUEST") }
+            }
 
         createNote(
             token = tokens.accessToken,
@@ -74,9 +82,11 @@ class NoteFlowIntegrationTest : IntegrationTestBase() {
             url = "https://spring.io",
             tags = listOf("java"),
         )
-            .andExpect(status().isCreated)
-            .andExpect(jsonPath("$.type").value("LINK"))
-            .andExpect(jsonPath("$.url").value("https://spring.io"))
+            .andExpect {
+                status { isCreated() }
+                jsonPath("$.type") { value("LINK") }
+                jsonPath("$.url") { value("https://spring.io") }
+            }
     }
 
     @Test
@@ -84,8 +94,10 @@ class NoteFlowIntegrationTest : IntegrationTestBase() {
         val tokens = registerUser()
 
         createNote(token = tokens.accessToken, title = "   ")
-            .andExpect(status().isBadRequest)
-            .andExpect(jsonPath("$.code").value("VALIDATION_ERROR"))
+            .andExpect {
+                status { isBadRequest() }
+                jsonPath("$.code") { value("VALIDATION_ERROR") }
+            }
     }
 
     @Test
@@ -101,8 +113,10 @@ class NoteFlowIntegrationTest : IntegrationTestBase() {
             header("Authorization", bearer(tokens.accessToken))
             param("tag", "Работа")
         }
-            .andExpect(status().isOk)
-            .andExpect(jsonPath("$.totalElements").value(2))
+            .andExpect {
+                status { isOk() }
+                jsonPath("$.totalElements") { value(2) }
+            }
 
         mockMvc.get("/api/v1/notes") {
             header("Authorization", bearer(tokens.accessToken))
@@ -110,9 +124,11 @@ class NoteFlowIntegrationTest : IntegrationTestBase() {
             param("tag", "java")
             param("tagsMode", "ALL")
         }
-            .andExpect(status().isOk)
-            .andExpect(jsonPath("$.totalElements").value(1))
-            .andExpect(jsonPath("$.items[0].title").value("Заметка про работу и java"))
+            .andExpect {
+                status { isOk() }
+                jsonPath("$.totalElements") { value(1) }
+                jsonPath("$.items[0].title") { value("Заметка про работу и java") }
+            }
 
         mockMvc.get("/api/v1/notes") {
             header("Authorization", bearer(tokens.accessToken))
@@ -120,8 +136,10 @@ class NoteFlowIntegrationTest : IntegrationTestBase() {
             param("tag", "отдых")
             param("tagsMode", "ANY")
         }
-            .andExpect(status().isOk)
-            .andExpect(jsonPath("$.totalElements").value(2))
+            .andExpect {
+                status { isOk() }
+                jsonPath("$.totalElements") { value(2) }
+            }
     }
 
     @Test
@@ -135,25 +153,31 @@ class NoteFlowIntegrationTest : IntegrationTestBase() {
             header("Authorization", bearer(tokens.accessToken))
             param("q", "документация")
         }
-            .andExpect(status().isOk)
-            .andExpect(jsonPath("$.totalElements").value(1))
-            .andExpect(jsonPath("$.items[0].title").value("Документация Spring"))
+            .andExpect {
+                status { isOk() }
+                jsonPath("$.totalElements") { value(1) }
+                jsonPath("$.items[0].title") { value("Документация Spring") }
+            }
 
         mockMvc.get("/api/v1/search") {
             header("Authorization", bearer(tokens.accessToken))
             param("q", "свёкла")
         }
-            .andExpect(status().isOk)
-            .andExpect(jsonPath("$.totalElements").value(1))
-            .andExpect(jsonPath("$.items[0].title").value("Рецепт борща"))
+            .andExpect {
+                status { isOk() }
+                jsonPath("$.totalElements") { value(1) }
+                jsonPath("$.items[0].title") { value("Рецепт борща") }
+            }
 
         // Поиск по части слова работает за счёт триграмм на заголовке.
         mockMvc.get("/api/v1/search") {
             header("Authorization", bearer(tokens.accessToken))
             param("q", "докум")
         }
-            .andExpect(status().isOk)
-            .andExpect(jsonPath("$.totalElements").value(1))
+            .andExpect {
+                status { isOk() }
+                jsonPath("$.totalElements") { value(1) }
+            }
     }
 
     @Test
@@ -168,9 +192,11 @@ class NoteFlowIntegrationTest : IntegrationTestBase() {
             param("q", "документация")
             param("tags", "kotlin")
         }
-            .andExpect(status().isOk)
-            .andExpect(jsonPath("$.totalElements").value(1))
-            .andExpect(jsonPath("$.items[0].title").value("Документация Kotlin"))
+            .andExpect {
+                status { isOk() }
+                jsonPath("$.totalElements") { value(1) }
+                jsonPath("$.items[0].title") { value("Документация Kotlin") }
+            }
     }
 
     @Test
@@ -184,9 +210,11 @@ class NoteFlowIntegrationTest : IntegrationTestBase() {
             header("Authorization", bearer(tokens.accessToken))
             param("type", "LINK")
         }
-            .andExpect(status().isOk)
-            .andExpect(jsonPath("$.totalElements").value(1))
-            .andExpect(jsonPath("$.items[0].title").value("Ссылка"))
+            .andExpect {
+                status { isOk() }
+                jsonPath("$.totalElements") { value(1) }
+                jsonPath("$.items[0].title") { value("Ссылка") }
+            }
     }
 
     @Test
@@ -205,7 +233,7 @@ class NoteFlowIntegrationTest : IntegrationTestBase() {
         mockMvc.patch("/api/v1/notes/$noteId") {
             header("Authorization", bearer(tokens.accessToken))
             contentType = MediaType.APPLICATION_JSON
-            content = json(
+            this.content = json(
                 mapOf(
                     "title" to "Готово",
                     "content" to "новый текст",
@@ -214,24 +242,30 @@ class NoteFlowIntegrationTest : IntegrationTestBase() {
                 )
             )
         }
-            .andExpect(status().isOk)
-            .andExpect(jsonPath("$.title").value("Готово"))
-            .andExpect(jsonPath("$.content").value("новый текст"))
-            .andExpect(jsonPath("$.tags.length()").value(2))
-            .andExpect(jsonPath("$.archivedAt").isNotEmpty)
+            .andExpect {
+                status { isOk() }
+                jsonPath("$.title") { value("Готово") }
+                jsonPath("$.content") { value("новый текст") }
+                jsonPath("$.tags.length()") { value(2) }
+                jsonPath("$.archivedAt") { isNotEmpty() }
+            }
 
         mockMvc.get("/api/v1/notes") {
             header("Authorization", bearer(tokens.accessToken))
         }
-            .andExpect(status().isOk)
-            .andExpect(jsonPath("$.totalElements").value(0))
+            .andExpect {
+                status { isOk() }
+                jsonPath("$.totalElements") { value(0) }
+            }
 
         mockMvc.get("/api/v1/notes") {
             header("Authorization", bearer(tokens.accessToken))
             param("includeArchived", "true")
         }
-            .andExpect(status().isOk)
-            .andExpect(jsonPath("$.totalElements").value(1))
+            .andExpect {
+                status { isOk() }
+                jsonPath("$.totalElements") { value(1) }
+            }
     }
 
     @Test
@@ -245,11 +279,13 @@ class NoteFlowIntegrationTest : IntegrationTestBase() {
         mockMvc.patch("/api/v1/notes/$noteId") {
             header("Authorization", bearer(tokens.accessToken))
             contentType = MediaType.APPLICATION_JSON
-            content = json(mapOf("content" to ""))
+            this.content = json(mapOf("content" to ""))
         }
-            .andExpect(status().isOk)
-            // default-property-inclusion=non_null: null-поля в JSON не попадают
-            .andExpect(jsonPath("$.content").doesNotExist())
+            .andExpect {
+                status { isOk() }
+                // default-property-inclusion=non_null: null-поля в JSON не попадают
+                jsonPath("$.content") { doesNotExist() }
+            }
     }
 
     @Test
@@ -263,25 +299,33 @@ class NoteFlowIntegrationTest : IntegrationTestBase() {
         mockMvc.delete("/api/v1/notes/$noteId") {
             header("Authorization", bearer(tokens.accessToken))
         }
-            .andExpect(status().isNoContent)
+            .andExpect {
+                status { isNoContent() }
+            }
 
         mockMvc.get("/api/v1/notes/$noteId") {
             header("Authorization", bearer(tokens.accessToken))
         }
-            .andExpect(status().isNotFound)
+            .andExpect {
+                status { isNotFound() }
+            }
 
         mockMvc.get("/api/v1/notes") {
             header("Authorization", bearer(tokens.accessToken))
         }
-            .andExpect(status().isOk)
-            .andExpect(jsonPath("$.totalElements").value(0))
+            .andExpect {
+                status { isOk() }
+                jsonPath("$.totalElements") { value(0) }
+            }
 
         mockMvc.post("/api/v1/notes/$noteId/restore") {
             header("Authorization", bearer(tokens.accessToken))
         }
-            .andExpect(status().isOk)
-            .andExpect(jsonPath("$.title").value("Временная"))
-            .andExpect(jsonPath("$.tags.length()").value(1))
+            .andExpect {
+                status { isOk() }
+                jsonPath("$.title") { value("Временная") }
+                jsonPath("$.tags.length()") { value(1) }
+            }
     }
 
     @Test
@@ -294,26 +338,34 @@ class NoteFlowIntegrationTest : IntegrationTestBase() {
         mockMvc.get("/api/v1/notes/$noteId") {
             header("Authorization", bearer(stranger.accessToken))
         }
-            .andExpect(status().isNotFound)
+            .andExpect {
+                status { isNotFound() }
+            }
 
         mockMvc.patch("/api/v1/notes/$noteId") {
             header("Authorization", bearer(stranger.accessToken))
             contentType = MediaType.APPLICATION_JSON
-            content = json(mapOf("title" to "Взлом"))
+            this.content = json(mapOf("title" to "Взлом"))
         }
-            .andExpect(status().isNotFound)
+            .andExpect {
+                status { isNotFound() }
+            }
 
         mockMvc.delete("/api/v1/notes/$noteId") {
             header("Authorization", bearer(stranger.accessToken))
         }
-            .andExpect(status().isNotFound)
+            .andExpect {
+                status { isNotFound() }
+            }
 
         // У владельца заметка осталась нетронутой.
         mockMvc.get("/api/v1/notes/$noteId") {
             header("Authorization", bearer(owner.accessToken))
         }
-            .andExpect(status().isOk)
-            .andExpect(jsonPath("$.title").value("Секрет"))
+            .andExpect {
+                status { isOk() }
+                jsonPath("$.title") { value("Секрет") }
+            }
     }
 
     @Test
@@ -328,10 +380,12 @@ class NoteFlowIntegrationTest : IntegrationTestBase() {
         mockMvc.get("/api/v1/tags") {
             header("Authorization", bearer(first.accessToken))
         }
-            .andExpect(status().isOk)
-            .andExpect(jsonPath("$.length()").value(1))
-            .andExpect(jsonPath("$[0].name").value("общий"))
-            .andExpect(jsonPath("$[0].noteCount").value(2))
+            .andExpect {
+                status { isOk() }
+                jsonPath("$.length()") { value(1) }
+                jsonPath("$[0].name") { value("общий") }
+                jsonPath("$[0].noteCount") { value(2) }
+            }
     }
 
     @Test
@@ -341,8 +395,10 @@ class NoteFlowIntegrationTest : IntegrationTestBase() {
         mockMvc.get("/api/v1/notes/${UUID.randomUUID()}") {
             header("Authorization", bearer(tokens.accessToken))
         }
-            .andExpect(status().isNotFound)
-            .andExpect(jsonPath("$.code").value("NOT_FOUND"))
+            .andExpect {
+                status { isNotFound() }
+                jsonPath("$.code") { value("NOT_FOUND") }
+            }
     }
 
     @Test
@@ -355,11 +411,13 @@ class NoteFlowIntegrationTest : IntegrationTestBase() {
             param("page", "0")
             param("size", "2")
         }
-            .andExpect(status().isOk)
-            .andExpect(jsonPath("$.items.length()").value(2))
-            .andExpect(jsonPath("$.totalElements").value(3))
-            .andExpect(jsonPath("$.totalPages").value(2))
-            .andExpect(jsonPath("$.hasNext").value(true))
+            .andExpect {
+                status { isOk() }
+                jsonPath("$.items.length()") { value(2) }
+                jsonPath("$.totalElements") { value(3) }
+                jsonPath("$.totalPages") { value(2) }
+                jsonPath("$.hasNext") { value(true) }
+            }
     }
 
     @Test
@@ -370,7 +428,9 @@ class NoteFlowIntegrationTest : IntegrationTestBase() {
             header("Authorization", bearer(tokens.accessToken))
             param("size", "5000")
         }
-            .andExpect(status().isBadRequest)
+            .andExpect {
+                status { isBadRequest() }
+            }
     }
 
     @Test
@@ -381,6 +441,8 @@ class NoteFlowIntegrationTest : IntegrationTestBase() {
             header("Authorization", bearer(tokens.accessToken))
             param("type", "VIDEO")
         }
-            .andExpect(status().isBadRequest)
+            .andExpect {
+                status { isBadRequest() }
+            }
     }
 }
