@@ -9,7 +9,6 @@ import org.springframework.test.context.DynamicPropertyRegistry
 import org.springframework.test.context.DynamicPropertySource
 import org.springframework.test.web.servlet.MockMvc
 import org.springframework.test.web.servlet.post
-import org.springframework.test.web.servlet.result.MockMvcResultMatchers.status
 import org.testcontainers.containers.PostgreSQLContainer
 import org.testcontainers.utility.DockerImageName
 import java.util.UUID
@@ -24,6 +23,10 @@ import java.util.UUID
  *
  * Аннотация @SpringBootTest намеренно не стоит здесь: её ставит каждый
  * конкретный тест, чтобы можно было точечно менять набор свойств.
+ *
+ * Проверки пишутся в Kotlin-DSL MockMvc: `mockMvc.post(...)` возвращает
+ * `ResultActionsDsl`, поэтому утверждения оформляются блоком `andExpect { ... }`,
+ * а не классическими `ResultMatcher`. Смешивать два API нельзя.
  */
 @AutoConfigureMockMvc
 @ActiveProfiles("test")
@@ -47,7 +50,7 @@ abstract class IntegrationTestBase {
     ): TokenPair {
         val result = mockMvc.post("/api/v1/auth/register") {
             contentType = MediaType.APPLICATION_JSON
-            content = json(
+            this.content = json(
                 mapOf(
                     "email" to email,
                     "password" to password,
@@ -55,7 +58,9 @@ abstract class IntegrationTestBase {
                 )
             )
         }
-            .andExpect(status().isCreated)
+            .andExpect {
+                status { isCreated() }
+            }
             .andReturn()
 
         val node = objectMapper.readTree(result.response.contentAsString)

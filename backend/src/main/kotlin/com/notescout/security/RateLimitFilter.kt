@@ -8,6 +8,7 @@ import io.github.bucket4j.Bucket
 import jakarta.servlet.FilterChain
 import jakarta.servlet.http.HttpServletRequest
 import jakarta.servlet.http.HttpServletResponse
+import org.springframework.http.HttpStatus
 import org.springframework.http.MediaType
 import org.springframework.stereotype.Component
 import org.springframework.web.filter.OncePerRequestFilter
@@ -49,7 +50,8 @@ class RateLimitFilter(
         val bucket = buckets.computeIfAbsent(clientKey(request)) { newBucket() }
 
         if (!bucket.tryConsume(1)) {
-            response.status = HttpServletResponse.SC_TOO_MANY_REQUESTS
+            // В Servlet API нет константы для 429 — берём значение из HttpStatus.
+            response.status = HttpStatus.TOO_MANY_REQUESTS.value()
             response.contentType = MediaType.APPLICATION_JSON_VALUE
             response.characterEncoding = Charsets.UTF_8.name()
             response.setHeader("Retry-After", properties.rateLimit.authWindow.seconds.toString())

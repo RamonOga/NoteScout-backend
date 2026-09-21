@@ -38,7 +38,13 @@ data class AppProperties(
 
     data class RateLimit(
         val enabled: Boolean = true,
-        /** Сколько запросов к /api/v1/auth/** разрешено с одного IP за окно. */
+        /**
+         * Сколько запросов к эндпоинтам аутентификации разрешено с одного IP за окно.
+         *
+         * Пути здесь намеренно не пишутся: последовательность из слэша и звёздочки
+         * внутри комментария Kotlin открывает вложенный блочный комментарий —
+         * комментарии в этом языке вложенные.
+         */
         val authCapacity: Int = 10,
         val authWindow: Duration = Duration.ofMinutes(1),
     )
