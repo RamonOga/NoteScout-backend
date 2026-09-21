@@ -1,0 +1,39 @@
+# --- Секреты и локальные данные ---
+.env
+.env.*
+!.env.example
+
+# --- Java / Gradle ---
+backend/.gradle/
+backend/build/
+backend/out/
+backend/bin/
+*.class
+*.jar
+!backend/gradle/wrapper/gradle-wrapper.jar
+
+# --- IDE ---
+.idea/
+*.iml
+*.ipr
+*.iws
+.vscode/
+.settings/
+.classpath
+.project
+
+# --- OS ---
+.DS_Store
+Thumbs.db
+
+# --- Flutter (добавится, когда возьмёмся за мобильное приложение) ---
+mobile/.dart_tool/
+mobile/build/
+mobile/.flutter-plugins*
+mobile/ios/Pods/
+mobile/android/.gradle/
+
+# --- Бэкапы (на случай локального запуска скриптов) ---
+backups/
+*.dump
+*.dump.sha256

@@ -1,0 +1,18 @@
+app:
+  jwt:
+    # Секрет только для тестов. Продуктовый приходит из переменной окружения.
+    secret: test-only-secret-0123456789abcdef0123456789abcdef
+    issuer: notescout-api-test
+    access-token-ttl: 15m
+    refresh-token-ttl: 30d
+  rate-limit:
+    # По умолчанию выключен, чтобы тесты не упирались в лимит.
+    # Включается точечно через @TestPropertySource.
+    enabled: false
+
+logging:
+  level:
+    root: WARN
+    com.notescout: INFO
+    org.testcontainers: WARN
+    com.github.dockerjava: WARN

@@ -1,0 +1,45 @@
+# ============================================================================
+#  Caddy: TLS-терминация и reverse proxy для API.
+#  Сертификат Let's Encrypt выпускается и продлевается автоматически —
+#  нужен только домен, указывающий A-записью на этот сервер.
+# ============================================================================
+
+{$DOMAIN} {
+	encode zstd gzip
+
+	# /actuator/* — служебные эндпоинты приложения. Наружу отдаём только health:
+	# остальное (метрики, детали) доступно лишь изнутри docker-сети.
+	@actuator {
+		path /actuator/*
+		not path /actuator/health /actuator/health/*
+	}
+	handle @actuator {
+		respond 404
+	}
+
+	# Спецификация API и Swagger UI. Пока нужны для отладки мобильного клиента;
+	# перед публичным запуском раскомментируйте блок, чтобы закрыть их.
+	# @docs {
+	# 	path /swagger-ui* /v3/api-docs*
+	# }
+	# handle @docs {
+	# 	respond 404
+	# }
+
+	handle {
+		reverse_proxy api:8080
+	}
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "no-referrer"
+		-Server
+	}
+
+	log {
+		output stdout
+		format json
+	}
+}

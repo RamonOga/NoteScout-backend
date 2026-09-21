@@ -1,0 +1,56 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  backend:
+    name: Бэкенд — сборка и тесты
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Установить JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Установить Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.14.2"
+
+      # Интеграционные тесты поднимают PostgreSQL через Testcontainers,
+      # поэтому Docker на раннере обязателен (на ubuntu-latest он есть).
+      - name: Сборка и тесты
+        run: gradle build --no-daemon --console=plain
+
+      - name: Отчёт о тестах
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: backend/build/reports/tests/test
+          if-no-files-found: ignore
+
+  ops-scripts:
+    name: Скрипты бэкапа — статический анализ
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: shellcheck
+        run: shellcheck ops/backup/*.sh
+
+      - name: Синтаксис POSIX sh
+        run: |
+          for script in ops/backup/*.sh; do
+            sh -n "$script"
+            echo "ok: $script"
+          done

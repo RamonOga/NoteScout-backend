@@ -1,0 +1,16 @@
+# Продуктовый профиль: тихие логи, Swagger можно выключить переменной окружения.
+spring:
+  jpa:
+    show-sql: false
+
+springdoc:
+  api-docs:
+    enabled: ${OPENAPI_ENABLED:true}
+  swagger-ui:
+    enabled: ${SWAGGER_ENABLED:true}
+
+logging:
+  level:
+    root: WARN
+    com.notescout: INFO
+    org.flywaydb: INFO

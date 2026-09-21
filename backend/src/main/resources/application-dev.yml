@@ -1,0 +1,23 @@
+# Профиль локальной разработки: подробные SQL-логи и щедрый rate limit.
+spring:
+  jpa:
+    show-sql: true
+    properties:
+      hibernate:
+        format_sql: true
+
+app:
+  jwt:
+    # Дефолт только для локального запуска (в том числе из IDE).
+    # Продуктовый профиль такого дефолта не имеет и без JWT_SECRET не стартует.
+    secret: ${JWT_SECRET:dev-only-secret-do-not-use-in-production-0123456789abcdef}
+  rate-limit:
+    auth-capacity: 200
+
+logging:
+  level:
+    com.notescout: DEBUG
+    org.hibernate.SQL: DEBUG
+    org.hibernate.orm.jdbc.bind: TRACE
+    org.flywaydb: INFO
+    org.springframework.web: INFO
