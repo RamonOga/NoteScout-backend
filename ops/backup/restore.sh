@@ -58,7 +58,16 @@ if [ "${CONFIRM_RESTORE:-no}" != "yes" ]; then
 fi
 
 # --- подготовка целевой базы ------------------------------------------------
-db_exists=$(psql -d postgres -tAc "select 1 from pg_database where datname = :'db'" -v db="$target_db" || true)
+# Запрос передаём через стандартный ввод: подстановку :'db' psql выполняет
+# только в таком режиме. В `-c` последовательность остаётся как есть, Postgres
+# отвечает «syntax error at or near ":"», а из-за `|| true` ошибка молча
+# превращалась в «базы нет» — и восстановление шло не в ту базу.
+if ! db_exists=$(psql -d postgres -tA -v db="$target_db" <<'SQL'
+select 1 from pg_database where datname = :'db';
+SQL
+); then
+    fail "не удалось проверить, существует ли база '${target_db}'"
+fi
 
 if [ "$db_exists" = "1" ]; then
     log "База '${target_db}' существует — содержимое будет перезаписано"

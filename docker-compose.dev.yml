@@ -64,6 +64,10 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      # Как и в продуктовом compose: миграции накатывает API, поэтому копия
+      # при старте должна сниматься после того, как схема появилась.
+      api:
+        condition: service_healthy
     environment:
       PGHOST: postgres
       PGPORT: "5432"

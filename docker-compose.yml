@@ -90,6 +90,11 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      # Схему создаёт API миграциями Flyway при старте. Без этой зависимости
+      # копия по BACKUP_ON_START снималась бы с базы, где таблиц ещё нет,
+      # и оказывалась дампом пустой базы.
+      api:
+        condition: service_healthy
     environment:
       PGHOST: postgres
       PGPORT: "5432"
