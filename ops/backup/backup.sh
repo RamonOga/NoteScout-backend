@@ -48,6 +48,18 @@ timestamp=$(date -u +%Y%m%dT%H%M%SZ)
 target="$BACKUP_DIR/daily/notescout-${timestamp}.dump"
 tmp="${target}.part"
 
+# Неудачный бэкап не должен оставлять после себя файлы. Иначе, например, дамп
+# без счётчиков выглядит как рабочая копия: раньше verify-restore.sh на пустом
+# файле счётчиков «проходил» проверку, ничего не сверив.
+completed=no
+cleanup_partial() {
+    if [ "$completed" != "yes" ]; then
+        rm -f "$target" "${target}.sha256" "${target}.counts" "$tmp"
+        log "Копия неполная — файлы удалены, чтобы не выглядели как рабочая копия"
+    fi
+}
+trap cleanup_partial EXIT INT TERM
+
 log "Дамп базы ${PGDATABASE} -> ${target}"
 
 # -Fc: сжатый формат, восстанавливается pg_restore, допускает выборочное
@@ -165,4 +177,7 @@ else
     log "Внешнее хранилище не настроено (S3_REMOTE пуст) — копия только на этом сервере"
 fi
 
+# Только здесь копия считается состоявшейся: до этой строки любой сбой
+# приводит к удалению файлов обработчиком cleanup_partial.
+completed=yes
 log "Резервное копирование успешно завершено"

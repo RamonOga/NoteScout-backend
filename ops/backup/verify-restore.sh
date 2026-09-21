@@ -39,6 +39,9 @@ done
 
 counts_file="${latest}.counts"
 [ -f "$counts_file" ] || fail "не найден файл ожидаемых счётчиков ${counts_file}"
+# Пустой файл означает, что сверять нечего, и проверка прошла бы впустую —
+# ровно так выглядит копия, снятая до появления схемы.
+[ -s "$counts_file" ] || fail "файл счётчиков ${counts_file} пуст: копия снята до появления схемы или повреждена"
 
 verify_db="notescout_verify_$(date -u +%Y%m%d%H%M%S)"
 
@@ -54,8 +57,10 @@ CONFIRM_RESTORE=yes /usr/local/bin/restore.sh "$latest" "$verify_db" >/dev/null 
     || fail "восстановление копии не удалось"
 
 mismatches=0
+compared=0
 while IFS='=' read -r table expected; do
     [ -n "$table" ] || continue
+    compared=$((compared + 1))
     actual=$(psql -d "$verify_db" -tAc "select count(*) from \"${table}\"") \
         || fail "не удалось прочитать таблицу ${table} в восстановленной базе"
 
@@ -67,6 +72,7 @@ while IFS='=' read -r table expected; do
     fi
 done < "$counts_file"
 
+[ "$compared" -gt 0 ] || fail "в файле счётчиков нет ни одной таблицы — проверять нечего"
 [ "$mismatches" -eq 0 ] || fail "расхождений: ${mismatches}. Копия неполная или повреждена"
 
-log "Проверка пройдена: копия восстанавливается и содержит ожидаемые данные"
+log "Проверка пройдена: сверено таблиц — ${compared}, расхождений нет"
