@@ -71,7 +71,10 @@ services:
     environment:
       DOMAIN: ${DOMAIN:?DOMAIN is required}
     ports:
-      - "80:80"
+      # Порт 80 на этой площадке занят nginx с Zabbix, поэтому публикуем только
+      # 443: сертификат выпускается проверкой TLS-ALPN-01, ей порт 80 не нужен.
+      # Когда 80 освободится, верните сюда "80:80" — редирект на HTTPS уже
+      # подготовлен в Caddyfile.
       - "443:443"
     volumes:
       - ./ops/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
