@@ -1,0 +1,90 @@
+# ============================================================================
+#  NoteScout — окружение разработчика.
+#
+#  Поднимает PostgreSQL, API с профилем dev (SQL-логи, Swagger, dev-секрет JWT)
+#  и контейнер резервного копирования. Caddy в dev-профиль не входит.
+#
+#  Запуск:  docker compose -f docker-compose.dev.yml up -d --build
+#  БД снаружи: localhost:5432 (удобно подключаться из IDE / DBeaver)
+#  API:        http://localhost:8080/swagger-ui.html
+#
+#  Если API вы запускаете из IDE, поднимите только БД:
+#           docker compose -f docker-compose.dev.yml up -d postgres
+# ============================================================================
+name: notescout-dev
+
+services:
+
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: notescout
+      POSTGRES_USER: notescout
+      POSTGRES_PASSWORD: notescout
+      PGDATA: /var/lib/postgresql/data/pgdata
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata_dev:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U notescout -d notescout -q"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    networks: [dev]
+
+  api:
+    build:
+      context: ./backend
+    image: notescout/api:dev
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      SPRING_PROFILES_ACTIVE: dev
+      DB_URL: jdbc:postgresql://postgres:5432/notescout
+      DB_USER: notescout
+      DB_PASSWORD: notescout
+      # ТОЛЬКО для локальной разработки. В проде секрет обязателен и уникален.
+      JWT_SECRET: dev-only-secret-do-not-use-in-production-0123456789abcdef
+      RATE_LIMIT_ENABLED: "true"
+    ports:
+      - "8080:8080"
+    networks: [dev]
+
+  # Сервис бэкапа есть и в dev: так весь цикл «создать копию -> проверить ->
+  # восстановить» проверяется локально, до выхода на прод.
+  backup:
+    build:
+      context: ./ops/backup
+    image: notescout/backup:dev
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      PGHOST: postgres
+      PGPORT: "5432"
+      PGDATABASE: notescout
+      PGUSER: notescout
+      PGPASSWORD: notescout
+      BACKUP_DIR: /backups
+      BACKUP_CRON: "0 3 * * *"
+      BACKUP_ON_START: "false"
+      RETENTION_DAILY: "7"
+      RETENTION_WEEKLY: "4"
+      RETENTION_MONTHLY: "12"
+      TZ: UTC
+    volumes:
+      - backups_dev:/backups
+    networks: [dev]
+
+networks:
+  dev:
+    driver: bridge
+
+volumes:
+  pgdata_dev:
+  backups_dev:
