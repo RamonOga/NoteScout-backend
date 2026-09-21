@@ -3,6 +3,7 @@ package com.notescout.tag
 import com.notescout.security.UserPrincipal
 import io.swagger.v3.oas.annotations.Operation
 import io.swagger.v3.oas.annotations.tags.Tag
+import org.springframework.security.core.annotation.AuthenticationPrincipal
 import org.springframework.web.bind.annotation.GetMapping
 import org.springframework.web.bind.annotation.RequestMapping
 import org.springframework.web.bind.annotation.RestController
@@ -16,5 +17,6 @@ class TagController(
 
     @GetMapping
     @Operation(summary = "Список тегов с числом активных заметок")
-    fun list(principal: UserPrincipal): List<TagResponse> = tagService.list(principal.id)
+    fun list(@AuthenticationPrincipal principal: UserPrincipal): List<TagResponse> =
+        tagService.list(principal.id)
 }
