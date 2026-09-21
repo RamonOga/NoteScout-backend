@@ -53,8 +53,18 @@ interface NoteRepository : JpaRepository<Note, UUID> {
          */
         const val NO_TAGS_STUB = "__no_tag_filter__"
 
+        /**
+         * Свёрнутый регистр строки запроса.
+         *
+         * notes_fold — функция из миграции V3: сворачивает кириллицу и латиницу
+         * явной таблицей символов, не полагаясь на локаль базы. Без неё поиск
+         * по русскому тексту ломается на кластерах с локалью C: запрос уходит
+         * в нижний регистр, а в индексе лежат слова с заглавной буквы.
+         */
+        private const val FOLDED_Q = "notes_fold(cast(:q as text))"
+
         private const val TS_QUERY =
-            "coalesce(websearch_to_tsquery('russian', cast(:q as text)), ''::tsquery)"
+            "coalesce(websearch_to_tsquery('russian', $FOLDED_Q), ''::tsquery)"
 
         private const val FILTER = """
             n.user_id = cast(:userId as uuid)
@@ -64,7 +74,7 @@ interface NoteRepository : JpaRepository<Note, UUID> {
               and (
                     cast(:q as text) is null
                     or n.search_vector @@ $TS_QUERY
-                    or n.title ilike ('%' || cast(:q as text) || '%')
+                    or notes_fold(n.title) like ('%' || $FOLDED_Q || '%')
                   )
               and (
                     cast(:tagCount as integer) = 0

@@ -20,6 +20,7 @@ import java.util.UUID
 class AuthService(
     private val userRepository: UserRepository,
     private val refreshTokenRepository: RefreshTokenRepository,
+    private val tokenRevocationService: TokenRevocationService,
     private val passwordEncoder: PasswordEncoder,
     private val jwtService: JwtService,
     private val properties: AppProperties,
@@ -81,6 +82,9 @@ class AuthService(
      * Если предъявлен уже отозванный токен — это признак кражи: отзываем все
      * токены пользователя, чтобы злоумышленник и владелец одинаково потеряли доступ,
      * а владелец вошёл заново по паролю.
+     *
+     * Отзыв идёт в ОТДЕЛЬНОЙ транзакции: следом мы бросаем UnauthorizedException,
+     * и отзыв в общей транзакции откатился бы вместе с ним.
      */
     @Transactional
     fun refresh(rawRefreshToken: String, deviceInfo: String?): TokenResponse {
@@ -93,7 +97,7 @@ class AuthService(
                 "Повторное использование отозванного refresh-токена, userId={}. Отзываю все токены.",
                 stored.userId,
             )
-            refreshTokenRepository.revokeAllForUser(stored.userId, now)
+            tokenRevocationService.revokeAllInNewTransaction(stored.userId, now)
             throw UnauthorizedException("Токен обновления уже был использован")
         }
 

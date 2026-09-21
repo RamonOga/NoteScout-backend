@@ -56,6 +56,11 @@ class SecurityConfig(
                         "/api/v1/auth/register",
                         "/api/v1/auth/login",
                         "/api/v1/auth/refresh",
+                        // Выход тоже без access-токена: смысл операции в том, чтобы
+                        // отозвать refresh-токен, а access-токен к этому моменту
+                        // вполне может быть просрочен. Само значение токена и есть
+                        // доказательство права на выход.
+                        "/api/v1/auth/logout",
                     ).permitAll()
                     .requestMatchers("/actuator/health", "/actuator/health/**", "/actuator/info").permitAll()
                     .requestMatchers("/v3/api-docs", "/v3/api-docs/**", "/swagger-ui/**", "/swagger-ui.html").permitAll()
