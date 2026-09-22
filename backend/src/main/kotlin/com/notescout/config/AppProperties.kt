@@ -1,6 +1,7 @@
 package com.notescout.config
 
 import org.springframework.boot.context.properties.ConfigurationProperties
+import org.springframework.util.unit.DataSize
 import java.time.Duration
 
 /**
@@ -13,6 +14,7 @@ import java.time.Duration
 data class AppProperties(
     val jwt: Jwt,
     val rateLimit: RateLimit = RateLimit(),
+    val attachments: Attachments = Attachments(),
 ) {
 
     data class Jwt(
@@ -47,5 +49,19 @@ data class AppProperties(
          */
         val authCapacity: Int = 10,
         val authWindow: Duration = Duration.ofMinutes(1),
+    )
+
+    /**
+     * Вложения к заметкам.
+     *
+     * Размеры ограничены, потому что диск сервера конечен: без квоты телефон
+     * с фотографиями забьёт его за месяц. Значения по умолчанию рассчитаны на
+     * личное использование, а не на сервис с тысячами пользователей.
+     */
+    data class Attachments(
+        /** Каталог хранения файлов. В контейнере это том. */
+        val directory: String = "/var/lib/notescout/attachments",
+        val maxFileSize: DataSize = DataSize.ofMegabytes(10),
+        val maxTotalPerUser: DataSize = DataSize.ofMegabytes(1024),
     )
 }

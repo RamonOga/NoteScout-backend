@@ -51,9 +51,16 @@ services:
       RATE_LIMIT_ENABLED: ${RATE_LIMIT_ENABLED:-true}
       RATE_LIMIT_AUTH_CAPACITY: ${RATE_LIMIT_AUTH_CAPACITY:-10}
       RATE_LIMIT_AUTH_WINDOW: ${RATE_LIMIT_AUTH_WINDOW:-1m}
+      ATTACHMENTS_DIR: /var/lib/notescout/attachments
+      ATTACHMENT_MAX_FILE_SIZE: ${ATTACHMENT_MAX_FILE_SIZE:-10MB}
+      ATTACHMENT_MAX_TOTAL_PER_USER: ${ATTACHMENT_MAX_TOTAL_PER_USER:-1024MB}
       TZ: ${TZ:-UTC}
     expose:
       - "8080"
+    volumes:
+      # Файлы вложений живут в томе, а не в слое контейнера: пересборка образа
+      # не должна их стирать.
+      - attachments:/var/lib/notescout/attachments
     healthcheck:
       test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1:8080/actuator/health/readiness >/dev/null 2>&1 || exit 1"]
       interval: 15s
@@ -113,8 +120,16 @@ services:
       S3_PREFIX: ${S3_PREFIX:-notescout}
       AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
       AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
+      # Каталог файлов вложений внутри контейнера резервного копирования.
+      ATTACHMENTS_DIR: /var/lib/notescout/attachments
     volumes:
       - backups:/backups
+      # Том примонтирован на запись, хотя сам backup.sh в него только читает.
+      # Иначе нечем выполнить восстановление: файлы вложений лежат вне базы,
+      # и вернуть их из архива можно только записью сюда же. Права на запись
+      # у контейнера и так есть по отношению к базе — restore.sh перезаписывает
+      # её целиком, — так что согласованность важнее иллюзии изоляции.
+      - attachments:/var/lib/notescout/attachments
     networks: [internal]
 
 networks:
@@ -124,5 +139,8 @@ networks:
 volumes:
   pgdata:
   backups:
+  # Файлы вложений. Отдельный том, а не каталог в образе api: образ
+  # пересобирается при каждом обновлении, данные обязаны пережить это.
+  attachments:
   caddy_data:
   caddy_config:

@@ -62,6 +62,19 @@ class NoteService(
     fun get(userId: UUID, noteId: UUID): NoteResponse =
         NoteResponse.from(requireOwned(userId, noteId))
 
+    /**
+     * Проверяет, что заметка принадлежит пользователю и не удалена.
+     *
+     * Нужна другим пакетам — вложениям, — которым важен сам факт владения, а не
+     * содержимое заметки. Возвращает Unit намеренно: сущность за пределы пакета
+     * не отдаём, иначе правило «заметка удалена — её не видно» разъедется по
+     * двум местам.
+     */
+    @Transactional(readOnly = true)
+    fun requireActiveNote(userId: UUID, noteId: UUID) {
+        requireOwned(userId, noteId)
+    }
+
     @Transactional(readOnly = true)
     fun search(userId: UUID, filter: NoteFilter): PageResponse<NoteResponse> {
         val normalizedTags = filter.tags

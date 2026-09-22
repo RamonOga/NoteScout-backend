@@ -13,6 +13,7 @@ import org.springframework.web.bind.MissingServletRequestParameterException
 import org.springframework.web.bind.annotation.ExceptionHandler
 import org.springframework.web.bind.annotation.RestControllerAdvice
 import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException
+import org.springframework.web.multipart.MaxUploadSizeExceededException
 
 /**
  * Превращает исключения в единый JSON-формат [ApiError].
@@ -43,6 +44,27 @@ class GlobalExceptionHandler {
     @ExceptionHandler(RateLimitExceededException::class)
     fun handleRateLimit(ex: RateLimitExceededException): ResponseEntity<ApiError> =
         build(HttpStatus.TOO_MANY_REQUESTS, "RATE_LIMIT_EXCEEDED", ex.message!!)
+
+    @ExceptionHandler(PayloadTooLargeException::class)
+    fun handlePayloadTooLarge(ex: PayloadTooLargeException): ResponseEntity<ApiError> =
+        build(HttpStatus.PAYLOAD_TOO_LARGE, "PAYLOAD_TOO_LARGE", ex.message!!)
+
+    /**
+     * Файл не прошёл ограничение multipart-разбора.
+     *
+     * Spring обрывает чтение раньше, чем запрос дойдёт до контроллера, поэтому
+     * до собственной проверки в сервисе дело не доходит. Отвечаем тем же кодом,
+     * что и на превышение квоты: для клиента это одно и то же событие.
+     */
+    @ExceptionHandler(MaxUploadSizeExceededException::class)
+    fun handleMaxUploadSize(ex: MaxUploadSizeExceededException): ResponseEntity<ApiError> {
+        log.warn("Загрузка отклонена по размеру: {}", ex.message)
+        return build(
+            HttpStatus.PAYLOAD_TOO_LARGE,
+            "PAYLOAD_TOO_LARGE",
+            "Файл слишком большой",
+        )
+    }
 
     @ExceptionHandler(AuthenticationException::class)
     fun handleAuthentication(ex: AuthenticationException): ResponseEntity<ApiError> =

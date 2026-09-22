@@ -232,6 +232,63 @@ curl -X PATCH https://api.example.com/api/v1/notes/$NOTE_ID \
 
 ---
 
+## Вложения
+
+Файлы, приложенные к заметке. Хранятся не в базе: в таблице только описание и
+ключ, по которому файл лежит в хранилище (том на сервере).
+
+Пределы задаются настройками: `app.attachments.max-file-size` (по умолчанию
+10 МБ на файл) и `app.attachments.max-total-per-user` (по умолчанию 1 ГБ на
+пользователя). Превышение любого из них — `413 PAYLOAD_TOO_LARGE`.
+
+### POST /notes/{id}/attachments
+
+`multipart/form-data`, поле `file`. Отвечает `201` и описанием вложения.
+
+```bash
+curl -X POST https://api.example.com/api/v1/notes/$NOTE_ID/attachments \
+  -H "Authorization: Bearer $TOKEN" \
+  -F 'file=@photo.jpg'
+```
+
+```json
+{
+  "id": "…",
+  "fileName": "photo.jpg",
+  "contentType": "image/jpeg",
+  "sizeBytes": 184320,
+  "createdAt": "2026-09-22T10:00:00Z"
+}
+```
+
+Заметка чужая или удалённая — `404`. Файл пустой — `400`.
+
+### GET /notes/{id}/attachments
+
+Список вложений заметки, от старых к новым.
+
+### GET /attachments/{id}/content
+
+Отдаёт файл потоком. Требует заголовка `Authorization` — **публичной ссылки у
+файла нет**, поэтому клиенту нужно скачивать байты самому, а не подставлять
+адрес в `Image.network`.
+
+Ответ содержит `Content-Disposition: attachment; filename*=UTF-8''…`, так что
+русские имена файлов не превращаются в кракозябры.
+
+### DELETE /attachments/{id}
+
+`204 No Content`. Файл удаляется после фиксации транзакции: если она
+откатится, строка останется и файл обязан остаться вместе с ней.
+
+### GET /attachments/usage
+
+```json
+{ "usedBytes": 184320, "limitBytes": 1073741824 }
+```
+
+---
+
 ## Теги
 
 ### GET /tags

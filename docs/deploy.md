@@ -267,4 +267,6 @@ df -h /var/lib/docker
 | API не стартует, «JWT_SECRET не задан» | пустой или короткий секрет | задать `JWT_SECRET` (минимум 32 байта) и перезапустить |
 | API перезапускается циклически | не прошли миграции или нет связи с БД | `docker compose logs api`, проверить `docker compose ps postgres` |
 | `verify-restore.sh` падает | копия не создалась или повреждена | `docker compose logs backup`, затем ручной `backup.sh` |
-| Кончилось место | накопились старые образы и копии | уменьшить `RETENTION_*`, `docker system prune -a` |
+| `413` при загрузке вложения | файл больше лимита или исчерпана квота | поднять `ATTACHMENT_MAX_FILE_SIZE` / `ATTACHMENT_MAX_TOTAL_PER_USER` или удалить ненужные вложения |
+| Кончилось место | накопились старые образы, копии или вложения | уменьшить `ATTACHMENT_MAX_TOTAL_PER_USER` и `RETENTION_*`, `docker system prune -a` |
+| Вложения пропали после восстановления | файлы лежат вне базы, дамп их не возвращает | выполнить шаг 4 из `runbook-backup.md` — распаковать архив вложений |
