@@ -42,6 +42,16 @@ spring:
     serialization:
       write-dates-as-timestamps: false
 
+  servlet:
+    multipart:
+      # Жёсткий предел разбора запроса. Нужен, чтобы гигантский файл не читался
+      # в память целиком: до собственной проверки сервиса дело не дойдёт.
+      # Значение чуть выше прикладного лимита — иначе multipart-накладные
+      # расходы на файл ровно в лимит приводили бы к отказу.
+      max-file-size: ${ATTACHMENT_MAX_FILE_SIZE:10MB}
+      max-request-size: ${ATTACHMENT_MAX_REQUEST_SIZE:12MB}
+      file-size-threshold: 256KB
+
 server:
   port: ${SERVER_PORT:8080}
   shutdown: graceful
@@ -63,6 +73,11 @@ app:
     enabled: ${RATE_LIMIT_ENABLED:true}
     auth-capacity: ${RATE_LIMIT_AUTH_CAPACITY:10}
     auth-window: ${RATE_LIMIT_AUTH_WINDOW:1m}
+  attachments:
+    # В контейнере это том: файлы не должны исчезать при пересборке образа.
+    directory: ${ATTACHMENTS_DIR:/var/lib/notescout/attachments}
+    max-file-size: ${ATTACHMENT_MAX_FILE_SIZE:10MB}
+    max-total-per-user: ${ATTACHMENT_MAX_TOTAL_PER_USER:1024MB}
 
 management:
   endpoints:

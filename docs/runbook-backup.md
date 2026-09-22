@@ -9,12 +9,17 @@
 
 | Параметр | Значение |
 |---|---|
-| Что копируется | вся база `notes` целиком (`pg_dump -Fc`) |
+| Что копируется | вся база `notes` целиком (`pg_dump -Fc`) **и файлы вложений** (`attachments.tar.gz`) |
 | Расписание | ежедневно в 03:00 по `TZ` контейнера (по умолчанию UTC), `BACKUP_CRON` |
 | Где лежит | том `backups`, каталоги `/daily`, `/weekly`, `/monthly` |
 | Ротация | 7 ежедневных, 4 недельных (по воскресеньям), 12 месячных (1-го числа) |
-| Рядом с копией | `.sha256` — контрольная сумма, `.counts` — количество строк по таблицам |
+| Рядом с копией | `.sha256` — контрольная сумма, `.counts` — количество строк по таблицам (у архива вложений — количество файлов) |
 | Внешнее хранилище | выключено, пока не заполнены `S3_REMOTE` и `S3_BUCKET` |
+
+**Копия — это дамп и архив вложений вместе.** Файлы лежат в томе `attachments`,
+а не в базе, поэтому дамп их не покрывает: без второго артефакта после
+восстановления заметки вернулись бы без файлов. Оба архива носят один и тот же
+таймстамп и уходят из ротации вместе.
 
 **RPO** (сколько данных можно потерять) — до 24 часов.
 **RTO** (сколько занимает восстановление) — 10–20 минут для базы до нескольких ГБ.
@@ -125,7 +130,26 @@ docker compose exec backup sh -c \
 Скрипт проверит контрольную сумму, при необходимости создаст базу и перезапишет
 содержимое (`pg_restore --clean --if-exists`).
 
-### Шаг 4. Поднять API и проверить
+### Шаг 4. Вернуть файлы вложений
+
+**Без этого шага заметки восстановятся без вложений.** Файлы лежат в томе
+`attachments`, а не в базе, поэтому дамп их не содержит.
+
+```bash
+docker compose exec backup sh -c \
+  'tar -xzf /backups/daily/notescout-20250601T030000Z-attachments.tar.gz \
+     -C /var/lib/notescout/attachments'
+```
+
+Архив распаковывается поверх текущего содержимого. Если нужно начать с чистого
+листа, сначала очистите каталог — но помните, что там могут быть вложения,
+созданные после снятия копии:
+
+```bash
+docker compose exec backup sh -c 'rm -rf /var/lib/notescout/attachments/*'
+```
+
+### Шаг 5. Поднять API и проверить
 
 ```bash
 docker compose start api
@@ -138,6 +162,11 @@ curl -s https://<домен>/actuator/health | jq
 ```bash
 docker compose exec postgres psql -U notescout -d notescout \
   -c 'select count(*) as notes from notes where deleted_at is null;'
+
+# вложений в базе столько же, сколько файлов в хранилище?
+docker compose exec postgres psql -U notescout -d notescout \
+  -c 'select count(*) as attachments from attachments;'
+docker compose exec backup sh -c 'find /var/lib/notescout/attachments -type f | wc -l'
 ```
 
 ---

@@ -22,3 +22,12 @@ class UnauthorizedException(message: String) : RuntimeException(message)
 /** Превышен лимит частоты запросов. */
 class RateLimitExceededException(message: String = "Слишком много запросов. Попробуйте позже.") :
     RuntimeException(message)
+
+/**
+ * Файл больше допустимого или исчерпана квота пользователя.
+ *
+ * Отдельно от [BadRequestException]: это не «некорректный запрос», запрос как
+ * раз корректный, просто данных слишком много. Клиенту полезно отличать одно
+ * от другого — 413 говорит «уменьшите файл», 400 «исправьте запрос».
+ */
+class PayloadTooLargeException(message: String) : RuntimeException(message)

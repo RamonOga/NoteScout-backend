@@ -6,6 +6,10 @@
 #  строк с данными, зафиксированными в момент создания дампа. Резервная копия,
 #  которую ни разу не восстанавливали, копией не считается.
 #
+#  Заодно проверяется архив вложений: файлы лежат не в базе, поэтому дамп их
+#  не покрывает. Сверяются контрольная сумма, число файлов в архиве и то, что
+#  вложений в базе не больше, чем файлов в архиве.
+#
 #  Запуск:
 #      docker compose exec backup /usr/local/bin/verify-restore.sh
 #
@@ -74,5 +78,48 @@ done < "$counts_file"
 
 [ "$compared" -gt 0 ] || fail "в файле счётчиков нет ни одной таблицы — проверять нечего"
 [ "$mismatches" -eq 0 ] || fail "расхождений: ${mismatches}. Копия неполная или повреждена"
+
+# ---------------------------------------------------------------------------
+#  Файлы вложений. Дамп их не содержит — они лежат в томе, — поэтому копия
+#  без целого архива вложений полной не считается: база восстановится,
+#  а заметки придут без файлов.
+# ---------------------------------------------------------------------------
+attachments_archive="${latest%.dump}-attachments.tar.gz"
+
+if [ -f "$attachments_archive" ]; then
+    expected_hash=$(cat "${attachments_archive}.sha256" 2>/dev/null || true)
+    [ -n "$expected_hash" ] \
+        || fail "нет контрольной суммы для $(basename "$attachments_archive")"
+
+    actual_hash=$(sha256sum "$attachments_archive" | awk '{print $1}')
+    [ "$actual_hash" = "$expected_hash" ] \
+        || fail "контрольная сумма архива вложений не совпадает — архив повреждён"
+
+    attachments_counts="${attachments_archive}.counts"
+    [ -s "$attachments_counts" ] || fail "нет счётчика файлов для архива вложений"
+    expected_files=$(sed -n 's/^files=//p' "$attachments_counts")
+    [ -n "$expected_files" ] || fail "счётчик файлов в архиве вложений пуст"
+
+    # В архиве есть и каталоги — они оканчиваются на слэш, их не считаем.
+    actual_files=$(tar -tzf "$attachments_archive" | grep -vc '/$' || true)
+
+    [ "$actual_files" = "$expected_files" ] \
+        || fail "в архиве вложений ${actual_files} файлов, ожидалось ${expected_files}"
+
+    log "  вложения: ${actual_files} файлов — совпадает"
+
+    # Сверка с базой: строк в attachments должно быть не больше, чем файлов.
+    # Меньше файлов, чем строк, означает вложение, которое нечем открыть.
+    restored_attachments=$(psql -d "$verify_db" -tAc "select count(*) from attachments")
+    if [ "$actual_files" -lt "$restored_attachments" ]; then
+        fail "в базе ${restored_attachments} вложений, а файлов в архиве ${actual_files}: часть файлов потеряна"
+    fi
+    if [ "$actual_files" -gt "$restored_attachments" ]; then
+        # Не отказ: лишние файлы занимают место, но данные целы.
+        log "  ПРЕДУПРЕЖДЕНИЕ: в архиве ${actual_files} файлов при ${restored_attachments} строках — есть осиротевшие файлы"
+    fi
+else
+    log "  вложений в копии нет: архив $(basename "$attachments_archive") не найден"
+fi
 
 log "Проверка пройдена: сверено таблиц — ${compared}, расхождений нет"
