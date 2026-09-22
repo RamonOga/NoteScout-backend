@@ -318,6 +318,17 @@ class NoteFlowIntegrationTest : IntegrationTestBase() {
                 jsonPath("$.totalElements") { value(0) }
             }
 
+        // Корзина: удалённая заметка видна только в режиме deletedOnly.
+        mockMvc.get("/api/v1/notes?deletedOnly=true") {
+            header("Authorization", bearer(tokens.accessToken))
+        }
+            .andExpect {
+                status { isOk() }
+                jsonPath("$.totalElements") { value(1) }
+                jsonPath("$.items[0].title") { value("Временная") }
+                jsonPath("$.items[0].deletedAt") { exists() }
+            }
+
         mockMvc.post("/api/v1/notes/$noteId/restore") {
             header("Authorization", bearer(tokens.accessToken))
         }
@@ -325,7 +336,66 @@ class NoteFlowIntegrationTest : IntegrationTestBase() {
                 status { isOk() }
                 jsonPath("$.title") { value("Временная") }
                 jsonPath("$.tags.length()") { value(1) }
+                // null-поля в JSON не попадают (default-property-inclusion=non_null)
+                jsonPath("$.deletedAt") { doesNotExist() }
             }
+
+        // После восстановления корзина пуста, а обычный список снова отдаёт заметку.
+        mockMvc.get("/api/v1/notes?deletedOnly=true") {
+            header("Authorization", bearer(tokens.accessToken))
+        }
+            .andExpect {
+                status { isOk() }
+                jsonPath("$.totalElements") { value(0) }
+            }
+
+        mockMvc.get("/api/v1/notes") {
+            header("Authorization", bearer(tokens.accessToken))
+        }
+            .andExpect {
+                status { isOk() }
+                jsonPath("$.totalElements") { value(1) }
+                jsonPath("$.items[0].deletedAt") { doesNotExist() }
+            }
+    }
+
+    @Test
+    fun `в корзину не попадают ни активные заметки, ни чужие удалённые`() {
+        val owner = registerUser()
+        val stranger = registerUser()
+
+        createNote(owner.accessToken, "Активная")
+        val deletedId = noteIdOf(createNote(owner.accessToken, "Удалённая").andReturn())
+
+        mockMvc.delete("/api/v1/notes/$deletedId") {
+            header("Authorization", bearer(owner.accessToken))
+        }
+            .andExpect { status { isNoContent() } }
+
+        // У владельца в корзине ровно одна запись — активная туда не просачивается.
+        mockMvc.get("/api/v1/notes?deletedOnly=true") {
+            header("Authorization", bearer(owner.accessToken))
+        }
+            .andExpect {
+                status { isOk() }
+                jsonPath("$.totalElements") { value(1) }
+                jsonPath("$.items[0].title") { value("Удалённая") }
+            }
+
+        // Чужой пользователь не видит удалённую заметку даже в корзине.
+        mockMvc.get("/api/v1/notes?deletedOnly=true") {
+            header("Authorization", bearer(stranger.accessToken))
+        }
+            .andExpect {
+                status { isOk() }
+                jsonPath("$.totalElements") { value(0) }
+            }
+
+        // И восстановить её тоже не может.
+        mockMvc.post("/api/v1/notes/$deletedId/restore") {
+            header("Authorization", bearer(stranger.accessToken))
+        }
+            .andExpect { status { isNotFound() } }
     }
 
     @Test

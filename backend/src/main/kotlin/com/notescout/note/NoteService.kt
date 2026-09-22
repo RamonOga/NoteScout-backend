@@ -25,6 +25,7 @@ data class NoteFilter(
     val tags: List<String> = emptyList(),
     val tagsMode: TagsMode = TagsMode.ANY,
     val includeArchived: Boolean = false,
+    val deletedOnly: Boolean = false,
     val page: Int = 0,
     val size: Int = 20,
 )
@@ -78,6 +79,7 @@ class NoteService(
             tagCount = normalizedTags.size,
             tagsMode = filter.tagsMode.name,
             includeArchived = filter.includeArchived,
+            deletedOnly = filter.deletedOnly,
             pageable = PageRequest.of(filter.page, filter.size),
         )
 
