@@ -26,6 +26,11 @@ interface NoteRepository : JpaRepository<Note, UUID> {
      * @param tags нормализованные имена тегов (lower-case)
      * @param tagCount реальное число тегов в фильтре (0 — фильтра нет)
      * @param tagsMode ANY — хотя бы один тег, ALL — все теги одновременно
+     * @param deletedOnly true — вернуть только удалённые (корзина), false — только
+     *   активные. Режимы взаимоудаляющие: смешивать удалённые с активными нельзя,
+     *   иначе непонятно, что из списка ещё живо. В режиме корзины `includeArchived`
+     *   не учитывается: удалённую заметку нужно вернуть независимо от того, лежала
+     *   ли она в архиве.
      */
     @Query(
         value = SELECT_QUERY,
@@ -40,6 +45,7 @@ interface NoteRepository : JpaRepository<Note, UUID> {
         @Param("tagCount") tagCount: Int,
         @Param("tagsMode") tagsMode: String,
         @Param("includeArchived") includeArchived: Boolean,
+        @Param("deletedOnly") deletedOnly: Boolean,
         pageable: Pageable,
     ): Page<Note>
 
@@ -68,8 +74,17 @@ interface NoteRepository : JpaRepository<Note, UUID> {
 
         private const val FILTER = """
             n.user_id = cast(:userId as uuid)
-              and n.deleted_at is null
-              and (cast(:includeArchived as boolean) = true or n.archived_at is null)
+              and (
+                    (
+                      cast(:deletedOnly as boolean) = false
+                      and n.deleted_at is null
+                      and (cast(:includeArchived as boolean) = true or n.archived_at is null)
+                    )
+                    or (
+                      cast(:deletedOnly as boolean) = true
+                      and n.deleted_at is not null
+                    )
+                  )
               and (cast(:type as text) is null or n.type = cast(:type as text))
               and (
                     cast(:q as text) is null

@@ -39,7 +39,11 @@ class NoteController(
     ): NoteResponse = noteService.create(principal.id, request)
 
     @GetMapping
-    @Operation(summary = "Список заметок с фильтрами по тегам, тексту и типу")
+    @Operation(
+        summary = "Список заметок с фильтрами по тегам, тексту и типу",
+        description = "`deletedOnly=true` возвращает корзину — только удалённые заметки, " +
+            "которые можно восстановить через `POST /notes/{id}/restore`.",
+    )
     fun list(
         @AuthenticationPrincipal principal: UserPrincipal,
         @RequestParam(required = false) q: String?,
@@ -47,6 +51,7 @@ class NoteController(
         @RequestParam(required = false, name = "tag") tag: List<String>?,
         @RequestParam(defaultValue = "ANY") tagsMode: TagsMode,
         @RequestParam(defaultValue = "false") includeArchived: Boolean,
+        @RequestParam(defaultValue = "false") deletedOnly: Boolean,
         @RequestParam(defaultValue = "0") @Min(0) page: Int,
         @RequestParam(defaultValue = "20") @Min(1) @Max(100) size: Int,
     ): PageResponse<NoteResponse> = noteService.search(
@@ -57,6 +62,7 @@ class NoteController(
             tags = tag ?: emptyList(),
             tagsMode = tagsMode,
             includeArchived = includeArchived,
+            deletedOnly = deletedOnly,
             page = page,
             size = size,
         ),

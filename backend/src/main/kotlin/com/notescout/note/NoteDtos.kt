@@ -60,6 +60,8 @@ data class NoteResponse(
     val createdAt: Instant,
     val updatedAt: Instant,
     val archivedAt: Instant?,
+    /** Момент мягкого удаления; null у активной заметки. */
+    val deletedAt: Instant?,
 ) {
     companion object {
         fun from(note: Note): NoteResponse = NoteResponse(
@@ -72,6 +74,7 @@ data class NoteResponse(
             createdAt = note.createdAt,
             updatedAt = note.updatedAt,
             archivedAt = note.archivedAt,
+            deletedAt = note.deletedAt,
         )
     }
 }
