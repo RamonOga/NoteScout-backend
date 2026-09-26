@@ -72,6 +72,13 @@ cleanup_partial() {
         rm -f "$target" "${target}.sha256" "${target}.counts" "$tmp"
         rm -f "$attachments_target" "${attachments_target}.sha256" \
             "${attachments_target}.counts" "$attachments_tmp"
+
+        # Отметка о сбое — по ней healthcheck контейнера видит проблему.
+        # Без неё падение ночной копии остаётся только в логах: ровно так
+        # пустой PGSSLMODE четыре дня подряд валил cron, и выяснилось это
+        # случайно, при разговоре про хранилище.
+        date -u +%Y-%m-%dT%H:%M:%SZ > "$BACKUP_DIR/last-failure" 2>/dev/null || true
+
         log "Копия неполная — файлы удалены, чтобы не выглядели как рабочая копия"
     fi
 }
@@ -300,4 +307,9 @@ fi
 # Только здесь копия считается состоявшейся: до этой строки любой сбой
 # приводит к удалению файлов обработчиком cleanup_partial.
 completed=yes
+
+# Отметки для healthcheck: успех снимает отметку о сбое и ставит свою.
+rm -f "$BACKUP_DIR/last-failure"
+date -u +%Y-%m-%dT%H:%M:%SZ > "$BACKUP_DIR/last-success" 2>/dev/null || true
+
 log "Резервное копирование успешно завершено"

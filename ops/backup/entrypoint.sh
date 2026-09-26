@@ -23,9 +23,18 @@ umask 077
 : > "$ENV_FILE"
 for name in PGHOST PGPORT PGDATABASE PGUSER PGPASSWORD PGSSLMODE \
             BACKUP_DIR RETENTION_DAILY RETENTION_WEEKLY RETENTION_MONTHLY TZ \
-            S3_REMOTE S3_BUCKET S3_PREFIX AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY; do
+            S3_REMOTE S3_BUCKET S3_PREFIX S3_TYPE S3_PROVIDER S3_ENDPOINT S3_REGION \
+            S3_ACCESS_KEY_ID S3_SECRET_ACCESS_KEY; do
     value=""
     eval "value=\${$name:-}"
+
+    # Пустое значение не записываем — иначе «не задано» превращается в «задано
+    # пустым», а это для libpq разные вещи: PGSSLMODE='' отвергается с
+    # «invalid sslmode value», и cron-копия падает, хотя ручной запуск работает.
+    # Там, где пустота осмысленна (S3_REMOTE — «внешнее хранилище не настроено»),
+    # backup.sh и сам подставляет значение по умолчанию.
+    [ -n "$value" ] || continue
+
     escaped=$(printf '%s' "$value" | sed "s/'/'\\\\''/g")
     printf "%s='%s'\n" "$name" "$escaped" >> "$ENV_FILE"
 done
