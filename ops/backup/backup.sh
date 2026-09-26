@@ -9,7 +9,8 @@
 #    4. архивирует файлы вложений: они лежат не в базе, и без этого шага
 #       тексты заметок восстанавливались бы, а файлы — нет;
 #    5. раскладывает копию в недельный (вс) и месячный (1-е число) наборы;
-#    6. удаляет устаревшие копии по политике хранения;
+#    6. удаляет устаревшие копии по политике хранения — и локально, и во
+#       внешнем хранилище: иначе бакет рос бы без предела;
 #    7. при настроенном S3_REMOTE выгружает копию во внешнее хранилище.
 #
 #  Запуск вручную:
@@ -29,6 +30,13 @@ RETENTION_MONTHLY="${RETENTION_MONTHLY:-12}"
 S3_REMOTE="${S3_REMOTE:-}"
 S3_BUCKET="${S3_BUCKET:-}"
 S3_PREFIX="${S3_PREFIX:-notescout}"
+
+# Путь во внешнем хранилище. Пустая строка означает «внешнее не настроено» —
+# по ней же решается, нужно ли чистить облако вместе с локальными копиями.
+remote_path=""
+if [ -n "$S3_REMOTE" ] && [ -n "$S3_BUCKET" ]; then
+    remote_path="${S3_REMOTE}:${S3_BUCKET}/${S3_PREFIX}"
+fi
 # Каталог файлов вложений. Пусто — шаг архивации пропускается: так копия
 # снимается и на установке, где вложений ещё нет.
 ATTACHMENTS_DIR="${ATTACHMENTS_DIR:-}"
@@ -203,6 +211,30 @@ prune() {
         rm -f "$attachments_candidate" "${attachments_candidate}.sha256" \
             "${attachments_candidate}.counts"
         log "Удалена устаревшая копия $(basename "$candidate")"
+
+        # Из облака удаляем ровно те же копии. Без этого бакет рос бы без
+        # предела: локально политика хранения работает, а в облаке оставалось
+        # бы всё, что когда-либо выгружено.
+        prune_remote "$directory" "$candidate" "$attachments_candidate"
+    done
+}
+
+# Удаляет пару «дамп + вложения» из внешнего хранилища вслед за локальной.
+prune_remote() {
+    [ -n "$remote_path" ] || return 0
+
+    directory="$1"
+    dump_candidate="$2"
+    attachments_candidate="$3"
+    set_name=$(basename "$directory")
+
+    for suffix in "" ".sha256" ".counts"; do
+        rclone deletefile \
+            "${remote_path}/${set_name}/$(basename "$dump_candidate")${suffix}" \
+            >/dev/null 2>&1 || true
+        rclone deletefile \
+            "${remote_path}/${set_name}/$(basename "$attachments_candidate")${suffix}" \
+            >/dev/null 2>&1 || true
     done
 }
 
@@ -212,40 +244,54 @@ prune "$BACKUP_DIR/monthly" "$RETENTION_MONTHLY"
 
 # ---------------------------------------------------------------------------
 #  Внешнее хранилище. Пока S3_REMOTE пуст — копия лежит только на этом сервере.
-#  Чтобы включить выгрузку, задайте S3_REMOTE/S3_BUCKET в .env и настройте
-#  remote командой: docker compose exec backup rclone config
+#
+#  Настройки хранилища приходят переменными окружения (RCLONE_CONFIG_*),
+#  поэтому `rclone config` запускать не нужно: см. docs/runbook-backup.md.
 # ---------------------------------------------------------------------------
-if [ -n "$S3_REMOTE" ] && [ -n "$S3_BUCKET" ]; then
-    remote_path="${S3_REMOTE}:${S3_BUCKET}/${S3_PREFIX}"
-    log "Выгружаю копию в ${remote_path}"
 
-    rclone copy "$target" "${remote_path}/daily/" \
+# Вспомогательные файлы (сумма, счётчики) выгружаем, но их отсутствие не
+# срывает копирование: дамп важнее. Однако и молчать нельзя — потерянные молча
+# счётчики означают, что проверять копию будет нечем.
+upload_file() {
+    source_file="$1"
+    destination_dir="$2"
+    [ -f "$source_file" ] || return 0
+    rclone copy "$source_file" "$destination_dir/" \
+        || log "ПРЕДУПРЕЖДЕНИЕ: не выгружен $(basename "$source_file")"
+}
+
+# Выгружает полный набор: дамп и архив вложений вместе с их суммами
+# и счётчиками. Именно полный: копия без счётчиков не проверяется,
+# а без контрольной суммы не проверяется на целостность.
+upload_set() {
+    destination_dir="$1"
+
+    rclone copy "$target" "$destination_dir/" \
         || fail "не удалось выгрузить копию во внешнее хранилище"
-    rclone copy "${target}.sha256" "${remote_path}/daily/" || true
-    rclone copy "$counts_file" "${remote_path}/daily/" || true
+    upload_file "${target}.sha256" "$destination_dir"
+    upload_file "$counts_file" "$destination_dir"
 
     # Вложения выгружаем вместе с дампом: внешняя копия базы без файлов
     # не спасёт — восстановить из неё заметки можно, а вложения нет.
     if [ -f "$attachments_target" ]; then
-        rclone copy "$attachments_target" "${remote_path}/daily/" \
+        rclone copy "$attachments_target" "$destination_dir/" \
             || fail "не удалось выгрузить архив вложений во внешнее хранилище"
-        rclone copy "${attachments_target}.sha256" "${remote_path}/daily/" || true
-        rclone copy "${attachments_target}.counts" "${remote_path}/daily/" || true
+        upload_file "${attachments_target}.sha256" "$destination_dir"
+        upload_file "${attachments_target}.counts" "$destination_dir"
     fi
+}
+
+if [ -n "$remote_path" ]; then
+    log "Выгружаю копию в ${remote_path}"
+    upload_set "${remote_path}/daily"
 
     if [ "$day_of_week" = "7" ]; then
-        rclone copy "$target" "${remote_path}/weekly/" || log "ПРЕДУПРЕЖДЕНИЕ: недельная копия не выгружена"
-        if [ -f "$attachments_target" ]; then
-            rclone copy "$attachments_target" "${remote_path}/weekly/" \
-                || log "ПРЕДУПРЕЖДЕНИЕ: недельный архив вложений не выгружен"
-        fi
+        upload_set "${remote_path}/weekly"
+        log "Копия выгружена в недельный набор"
     fi
     if [ "$day_of_month" = "01" ]; then
-        rclone copy "$target" "${remote_path}/monthly/" || log "ПРЕДУПРЕЖДЕНИЕ: месячная копия не выгружена"
-        if [ -f "$attachments_target" ]; then
-            rclone copy "$attachments_target" "${remote_path}/monthly/" \
-                || log "ПРЕДУПРЕЖДЕНИЕ: месячный архив вложений не выгружен"
-        fi
+        upload_set "${remote_path}/monthly"
+        log "Копия выгружена в месячный набор"
     fi
 else
     log "Внешнее хранилище не настроено (S3_REMOTE пуст) — копия только на этом сервере"

@@ -239,42 +239,72 @@ docker compose exec postgres psql -U notescout -d postgres -c 'drop database not
 
 ## Включение внешнего хранилища
 
-Пока `S3_REMOTE` пуст, копии остаются только на сервере. Чтобы выгружать их
-наружу, нужно настроить remote в rclone:
+Пока `S3_REMOTE` пуст, копии остаются только на сервере и не защищены от
+потери VPS.
 
-```bash
-docker compose exec backup rclone config
-```
+**`rclone config` запускать не нужно.** Хранилище собирается из переменных
+окружения, поэтому настройка лежит в `.env`, переживает пересоздание
+контейнера и переезжает на другой сервер вместе с файлом. Имя remote
+зафиксировано — `notescout`.
 
-Создайте remote типа `s3` (подходит MinIO, Yandex Object Storage, AWS S3,
-Selectel и другие S3-совместимые сервисы). Затем в `.env`:
+### Пример: cloud.ru Evolution Object Storage
+
+Значения берутся в консоли: раздел **Object Storage API** (Endpoint, Region,
+Tenant ID) и ключи сервисного аккаунта.
 
 ```dotenv
-S3_REMOTE=s3
-S3_BUCKET=notescout-backups
+S3_REMOTE=notescout
+S3_BUCKET=bucket-baf935
 S3_PREFIX=notescout
-AWS_ACCESS_KEY_ID=<ключ>
-AWS_SECRET_ACCESS_KEY=<секрет>
+S3_ENDPOINT=https://s3.cloud.ru
+S3_REGION=ru-central-1
+S3_ACCESS_KEY_ID=<ID тенанта>:<Key ID>
+S3_SECRET_ACCESS_KEY=<Key Secret>
 ```
+
+**Ключ доступа указывается через двоеточие** — сначала ID тенанта, потом Key
+ID. Это особенность cloud.ru: если подставить только Key ID, подпись не
+сойдётся и запросы будут отклоняться.
+
+`S3_TYPE` и `S3_PROVIDER` можно не задавать: по умолчанию это `s3` и `Other` —
+как раз то, что нужно S3-совместимым сервисам, кроме AWS.
+
+### Применение
 
 ```bash
 docker compose up -d backup
 docker compose exec backup /usr/local/bin/backup.sh
-docker compose exec backup rclone ls s3:notescout-backups/NoteScout-backend/daily
+docker compose exec backup rclone lsf -R notescout:$S3_BUCKET/notescout
 ```
 
-Конфигурация rclone хранится внутри контейнера и будет потеряна при пересоздании.
-Для постоянного хранения смонтируйте каталог конфигурации в `docker-compose.yml`:
+Ожидаемые файлы на каждый набор (`daily`, `weekly`, `monthly`): дамп, его
+`.sha256` и `.counts`, плюс то же самое для архива вложений.
 
-```yaml
-  backup:
-    volumes:
-      - backups:/backups
-      - ./ops/backup/rclone:/root/.config/rclone
+### Проверка внешней копии
+
+`verify-restore.sh` проверяет и внешнее хранилище: что последняя копия там есть
+и совпадает по размеру. Если выгрузка молча перестанет работать, недельная
+проверка это заметит — иначе о поломке стало бы известно только в момент
+восстановления.
+
+Полный цикл «скачать из облака и восстановить» стоит прогнать вручную хотя бы
+раз после включения:
+
+```bash
+docker compose exec backup sh -c '
+  rm -rf /tmp/cloud && mkdir -p /tmp/cloud
+  rclone copy notescout:$S3_BUCKET/notescout/daily/ /tmp/cloud/
+  dump=$(ls /tmp/cloud/*.dump | sort | tail -1)
+  expected=$(cat "$dump.sha256")
+  actual=$(sha256sum "$dump" | awk "{print \$1}")
+  [ "$expected" = "$actual" ] && echo "сумма сходится" || echo "СУММА НЕ СХОДИТСЯ"
+  CONFIRM_RESTORE=yes /usr/local/bin/restore.sh "$dump" notescout_cloud_check
+'
 ```
 
 После включения внешнего хранилища имеет смысл пересмотреть ротацию: локальные
-копии можно хранить меньше, а внешние — дольше.
+копии можно хранить меньше, а внешние — дольше. Удаление устаревших копий
+работает в обе стороны: `backup.sh` чистит и локальные наборы, и внешние.
 
 ---
 
@@ -294,13 +324,17 @@ docker compose exec backup rclone ls s3:notescout-backups/NoteScout-backend/dail
 
 ## Ограничения текущей схемы
 
-1. Копии лежат на том же диске, что и данные — нет защиты от отказа сервера.
+1. **Закрыто внешним хранилищем** (см. «Включение внешнего хранилища»):
+   копии лежат не только на том же диске. Локальные наборы при этом остаются —
+   они дают быстрое восстановление, внешние защищают от потери сервера.
 2. Нет уведомлений: об ошибке бэкапа видно только в логах контейнера
-   (`docker compose logs backup`).
+   (`docker compose logs backup`) и в выводе недельного `verify-restore.sh`.
+   Алерт по его результату — отдельная задача.
 3. Нет point-in-time recovery: восстанавливаемся на момент ночного дампа,
-   потеря — до суток.
-4. Конфигурация rclone не переживает пересоздание контейнера без монтирования
-   каталога.
-
-Первые три пункта закрываются внешним хранилищем, алертами и переходом на
-`pgBackRest`/WAL-G соответственно.
+   потеря — до суток. Закрывается переходом на `pgBackRest`/`WAL-G`.
+4. **Закрыто**: конфигурация rclone приходит переменными окружения и переживает
+   пересоздание контейнера.
+5. Вложения архивируются в каждую копию, а хранится их до 23 (7 + 4 + 12).
+   При растущих вложениях это умножается на размер архива — за местом на диске
+   нужно следить. Если станет тесно, вложения стоит выгружать отдельной
+   инкрементальной синхронизацией, а не полным архивом в каждый набор.

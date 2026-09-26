@@ -118,8 +118,18 @@ services:
       S3_REMOTE: ${S3_REMOTE:-}
       S3_BUCKET: ${S3_BUCKET:-}
       S3_PREFIX: ${S3_PREFIX:-notescout}
-      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
-      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
+      # rclone собирает удалённое хранилище прямо из переменных окружения:
+      # тогда настройки лежат в .env на сервере и переживают пересоздание
+      # контейнера. Вариант с `rclone config` писал файл внутрь контейнера,
+      # и первая же пересборка образа его теряла.
+      #
+      # Имя remote зафиксировано, поэтому в .env задаётся S3_REMOTE=notescout.
+      RCLONE_CONFIG_NOTESCOUT_TYPE: ${S3_TYPE:-s3}
+      RCLONE_CONFIG_NOTESCOUT_PROVIDER: ${S3_PROVIDER:-Other}
+      RCLONE_CONFIG_NOTESCOUT_ACCESS_KEY_ID: ${S3_ACCESS_KEY_ID:-}
+      RCLONE_CONFIG_NOTESCOUT_SECRET_ACCESS_KEY: ${S3_SECRET_ACCESS_KEY:-}
+      RCLONE_CONFIG_NOTESCOUT_ENDPOINT: ${S3_ENDPOINT:-}
+      RCLONE_CONFIG_NOTESCOUT_REGION: ${S3_REGION:-}
       # Каталог файлов вложений внутри контейнера резервного копирования.
       ATTACHMENTS_DIR: /var/lib/notescout/attachments
     volumes:
