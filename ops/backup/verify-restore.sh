@@ -127,6 +127,15 @@ attachments_path="${work_dir}/${attachments_name}"
 
 if rclone copy "${remote_set}/${attachments_name}" "$work_dir/" 2>/dev/null \
     && [ -f "$attachments_path" ]; then
+
+    # Сумма и счётчик лежат рядом с архивом и обязательны: без суммы архив
+    # нечем проверить, а без счётчика не с чем сравнить число файлов.
+    # Скачиваем их отдельно — вместе с архивом rclone их не приносит.
+    for suffix in ".sha256" ".counts"; do
+        rclone copy "${remote_set}/${attachments_name}${suffix}" "$work_dir/" \
+            || fail "не удалось скачать ${attachments_name}${suffix} из хранилища"
+    done
+
     expected_attachments_hash=$(cat "${attachments_path}.sha256" 2>/dev/null || true)
     [ -n "$expected_attachments_hash" ] \
         || fail "нет контрольной суммы для ${attachments_name}"
