@@ -11,10 +11,10 @@
 |---|---|
 | Что копируется | вся база `notes` целиком (`pg_dump -Fc`) **и файлы вложений** (`attachments.tar.gz`) |
 | Расписание | ежедневно в 03:00 по `TZ` контейнера (по умолчанию UTC), `BACKUP_CRON` |
-| Где лежит | том `backups`, каталоги `/daily`, `/weekly`, `/monthly` |
-| Ротация | 7 ежедневных, 4 недельных (по воскресеньям), 12 месячных (1-го числа) |
+| Где лежит | **только во внешнем хранилище**: `<S3_PREFIX>/daily`, `/weekly`, `/monthly` |
+| Ротация | 7 ежедневных, 4 недельных (по воскресеньям), 12 месячных (1-го числа) — в хранилище |
 | Рядом с копией | `.sha256` — контрольная сумма, `.counts` — количество строк по таблицам (у архива вложений — количество файлов) |
-| Внешнее хранилище | выключено, пока не заполнены `S3_REMOTE` и `S3_BUCKET` |
+| Локально | только то, что не удалось выгрузить (не больше `LOCAL_SAFETY_SETS` наборов) и отметки `last-success` / `last-failure` |
 
 **Копия — это дамп и архив вложений вместе.** Файлы лежат в томе `attachments`,
 а не в базе, поэтому дамп их не покрывает: без второго артефакта после
@@ -22,11 +22,13 @@
 таймстамп и уходят из ротации вместе.
 
 **RPO** (сколько данных можно потерять) — до 24 часов.
-**RTO** (сколько занимает восстановление) — 10–20 минут для базы до нескольких ГБ.
+**RTO** (сколько занимает восстановление) — 10–20 минут: сначала скачивание
+копии из хранилища, затем восстановление.
 
-> **Сейчас копии лежат на том же сервере.** Это защищает от ошибок приложения,
-> случайного удаления и порчи данных, но **не** от отказа диска или потери VPS.
-> Первый же шаг для повышения надёжности — включить внешнее хранилище (см. ниже).
+> **Копии живут только в хранилище.** Локальных копий нет намеренно: диск
+> сервера делится с базой, а копия на том же диске от потери сервера не спасает.
+> Хранилище обязательно — без него `backup.sh` не запускается вовсе, потому что
+> сохранять копию было бы некуда.
 
 ---
 
@@ -35,14 +37,23 @@
 ```bash
 cd /opt/notescout
 
-# копия за сегодня есть?
-docker compose exec backup ls -lh /backups/daily | tail -5
+# последние копии в хранилище
+docker compose exec backup sh -c \
+  'rclone lsf "notescout:${S3_BUCKET}/${S3_PREFIX}/daily/" | grep "\.dump$" | sort | tail -3'
+
+# состояние контейнера backup: unhealthy означает, что копия не удалась
+docker compose ps backup
 
 # последние строки журнала
 docker compose logs --since 24h backup | tail -30
 ```
 
-Признак проблемы — отсутствие файла `notescout-<сегодняшняя-дата>T030000Z.dump`.
+Признак проблемы — копии за сегодня нет в списке **или** контейнер `backup`
+в состоянии `unhealthy`.
+
+**Пустой каталог `/backups/daily` — это норма.** Локально копии не хранятся:
+они лежат только в хранилище. На диске остаётся лишь то, что не удалось
+выгрузить, плюс отметки `last-success` и `last-failure`.
 
 ---
 
@@ -114,17 +125,29 @@ docker compose exec backup /usr/local/bin/verify-restore.sh weekly
 docker compose stop api
 ```
 
-### Шаг 2. Выбрать копию
+### Шаг 2. Выбрать и скачать копию
+
+Локальных копий нет — они лежат только в хранилище, поэтому копию сначала
+скачивают во временный каталог контейнера.
 
 ```bash
-docker compose exec backup ls -lht /backups/daily
+docker compose exec backup sh -c '
+  set -e
+  dir="notescout:${S3_BUCKET}/${S3_PREFIX}/daily"
+  latest=$(rclone lsf "$dir/" | grep "\.dump$" | sort | tail -1)
+  echo "выбрана: $latest"
+  mkdir -p /tmp/restore
+  rclone copy "$dir/${latest}" /tmp/restore/
+  rclone copy "$dir/${latest}.sha256" /tmp/restore/
+  rclone copy "$dir/${latest}.counts" /tmp/restore/
+  ls -l /tmp/restore'
 ```
 
 ### Шаг 3. Восстановить
 
 ```bash
 docker compose exec backup sh -c \
-  'CONFIRM_RESTORE=yes /usr/local/bin/restore.sh /backups/daily/notescout-20250601T030000Z.dump'
+  'CONFIRM_RESTORE=yes /usr/local/bin/restore.sh /tmp/restore/notescout-20250601T030000Z.dump'
 ```
 
 Скрипт проверит контрольную сумму, при необходимости создаст базу и перезапишет
@@ -133,12 +156,17 @@ docker compose exec backup sh -c \
 ### Шаг 4. Вернуть файлы вложений
 
 **Без этого шага заметки восстановятся без вложений.** Файлы лежат в томе
-`attachments`, а не в базе, поэтому дамп их не содержит.
+`attachments`, а не в базе, поэтому дамп их не содержит. Архив вложений лежит
+в хранилище рядом с дампом:
 
 ```bash
-docker compose exec backup sh -c \
-  'tar -xzf /backups/daily/notescout-20250601T030000Z-attachments.tar.gz \
-     -C /var/lib/notescout/attachments'
+docker compose exec backup sh -c '
+  set -e
+  dir="notescout:${S3_BUCKET}/${S3_PREFIX}/daily"
+  latest=$(rclone lsf "$dir/" | grep "\.dump$" | sort | tail -1)
+  archive="${latest%.dump}-attachments.tar.gz"
+  rclone copy "$dir/${archive}" /tmp/restore/
+  tar -xzf "/tmp/restore/${archive}" -C /var/lib/notescout/attachments'
 ```
 
 Архив распаковывается поверх текущего содержимого. Если нужно начать с чистого
@@ -147,6 +175,12 @@ docker compose exec backup sh -c \
 
 ```bash
 docker compose exec backup sh -c 'rm -rf /var/lib/notescout/attachments/*'
+```
+
+Скачанное временное — после восстановления его можно убрать:
+
+```bash
+docker compose exec backup rm -rf /tmp/restore
 ```
 
 ### Шаг 5. Поднять API и проверить
@@ -173,39 +207,51 @@ docker compose exec backup sh -c 'find /var/lib/notescout/attachments -type f | 
 
 ## Проверка восстановления без остановки боевой базы
 
-Безопасный вариант: развернуть копию в отдельную базу и посмотреть данные там.
+Безопасный вариант: скачать копию и развернуть её в отдельную базу, чтобы
+посмотреть данные.
 
 ```bash
-docker compose exec backup sh -c \
-  'CONFIRM_RESTORE=yes /usr/local/bin/restore.sh /backups/daily/notescout-20250601T030000Z.dump notescout_check'
+docker compose exec backup sh -c '
+  set -e
+  dir="notescout:${S3_BUCKET}/${S3_PREFIX}/daily"
+  latest=$(rclone lsf "$dir/" | grep "\.dump$" | sort | tail -1)
+  mkdir -p /tmp/check
+  rclone copy "$dir/${latest}" /tmp/check/
+  rclone copy "$dir/${latest}.sha256" /tmp/check/
+  CONFIRM_RESTORE=yes /usr/local/bin/restore.sh "/tmp/check/${latest}" notescout_check'
 
 docker compose exec postgres psql -U notescout -d notescout_check \
   -c 'select id, email, created_at from users order by created_at desc limit 5;'
 
 # убрать за собой
 docker compose exec postgres psql -U notescout -d postgres -c 'drop database notescout_check;'
+docker compose exec backup rm -rf /tmp/check
 ```
+
+Этот же сценарий целиком, вместе со сверкой счётчиков, выполняет
+`verify-restore.sh` — он запускается по воскресеньям и проверяет именно ту
+копию, что лежит в хранилище.
 
 ---
 
 ## Переезд на новый сервер
 
-1. **На старом сервере** — свежая копия и выгрузка наружу:
+С внешним хранилищем переезд проще: копии уже лежат в облаке, и копировать
+файлы между серверами не нужно. Достаточно, чтобы новый сервер видел то же
+хранилище.
+
+1. **На старом сервере** — свежая копия, чтобы в облаке было актуальное
+   состояние:
 
    ```bash
    docker compose exec backup /usr/local/bin/backup.sh
-   docker compose exec backup ls -lh /backups/daily | tail -3
+   docker compose exec backup sh -c \
+     'rclone lsf "notescout:${S3_BUCKET}/${S3_PREFIX}/daily/" | grep "\.dump$" | sort | tail -1'
    ```
 
-   Скопируйте дамп на новый сервер (или дождитесь его в S3):
-
-   ```bash
-   docker compose cp backup:/backups/daily/notescout-20250601T030000Z.dump /tmp/
-   scp /tmp/notescout-20250601T030000Z.dump* newserver:/tmp/
-   ```
-
-2. **На новом сервере** — развернуть стек по [deploy.md](deploy.md), но
-   **до** первого запуска API.
+2. **На новом сервере** — развернуть стек по [deploy.md](deploy.md), указав в
+   `.env` **те же** параметры хранилища (`S3_*` и `RCLONE_CONFIG_*`), но **до**
+   первого запуска API.
 
 3. Поднять только базу:
 
@@ -213,14 +259,22 @@ docker compose exec postgres psql -U notescout -d postgres -c 'drop database not
    docker compose up -d postgres
    ```
 
-4. Скопировать дамп в контейнер бэкапа и восстановить:
+4. Скачать последнюю копию из хранилища и восстановить:
 
    ```bash
-   docker compose cp /tmp/notescout-20250601T030000Z.dump backup:/backups/daily/
-   docker compose cp /tmp/notescout-20250601T030000Z.dump.sha256 backup:/backups/daily/
-   docker compose exec backup sh -c \
-     'CONFIRM_RESTORE=yes /usr/local/bin/restore.sh /backups/daily/notescout-20250601T030000Z.dump'
+   docker compose exec backup sh -c '
+     set -e
+     dir="notescout:${S3_BUCKET}/${S3_PREFIX}/daily"
+     latest=$(rclone lsf "$dir/" | grep "\.dump$" | sort | tail -1)
+     mkdir -p /tmp/restore
+     rclone copy "$dir/${latest}" /tmp/restore/
+     rclone copy "$dir/${latest}.sha256" /tmp/restore/
+     CONFIRM_RESTORE=yes /usr/local/bin/restore.sh "/tmp/restore/${latest}"'
    ```
+
+   **Файлы вложений копией базы не возвращаются** — они лежат в томе старого
+   сервера и отдельным архивом в хранилище. Распакуйте архив тем же способом,
+   что в шаге 4 восстановления выше.
 
 5. Поднять остальное и проверить:
 
@@ -239,42 +293,62 @@ docker compose exec postgres psql -U notescout -d postgres -c 'drop database not
 
 ## Включение внешнего хранилища
 
-Пока `S3_REMOTE` пуст, копии остаются только на сервере. Чтобы выгружать их
-наружу, нужно настроить remote в rclone:
+Пока `S3_REMOTE` пуст, копии остаются только на сервере и не защищены от
+потери VPS.
 
-```bash
-docker compose exec backup rclone config
-```
+**`rclone config` запускать не нужно.** Хранилище собирается из переменных
+окружения, поэтому настройка лежит в `.env`, переживает пересоздание
+контейнера и переезжает на другой сервер вместе с файлом. Имя remote
+зафиксировано — `notescout`.
 
-Создайте remote типа `s3` (подходит MinIO, Yandex Object Storage, AWS S3,
-Selectel и другие S3-совместимые сервисы). Затем в `.env`:
+### Пример: cloud.ru Evolution Object Storage
+
+Значения берутся в консоли: раздел **Object Storage API** (Endpoint, Region,
+Tenant ID) и ключи сервисного аккаунта.
 
 ```dotenv
-S3_REMOTE=s3
-S3_BUCKET=notescout-backups
+S3_REMOTE=notescout
+S3_BUCKET=bucket-baf935
 S3_PREFIX=notescout
-AWS_ACCESS_KEY_ID=<ключ>
-AWS_SECRET_ACCESS_KEY=<секрет>
+S3_ENDPOINT=https://s3.cloud.ru
+S3_REGION=ru-central-1
+S3_ACCESS_KEY_ID=<ID тенанта>:<Key ID>
+S3_SECRET_ACCESS_KEY=<Key Secret>
 ```
+
+**Ключ доступа указывается через двоеточие** — сначала ID тенанта, потом Key
+ID. Это особенность cloud.ru: если подставить только Key ID, подпись не
+сойдётся и запросы будут отклоняться.
+
+`S3_TYPE` и `S3_PROVIDER` можно не задавать: по умолчанию это `s3` и `Other` —
+как раз то, что нужно S3-совместимым сервисам, кроме AWS.
+
+### Применение
 
 ```bash
 docker compose up -d backup
 docker compose exec backup /usr/local/bin/backup.sh
-docker compose exec backup rclone ls s3:notescout-backups/NoteScout-backend/daily
+docker compose exec backup rclone lsf -R notescout:$S3_BUCKET/notescout
 ```
 
-Конфигурация rclone хранится внутри контейнера и будет потеряна при пересоздании.
-Для постоянного хранения смонтируйте каталог конфигурации в `docker-compose.yml`:
+Ожидаемые файлы на каждый набор (`daily`, `weekly`, `monthly`): дамп, его
+`.sha256` и `.counts`, плюс то же самое для архива вложений.
 
-```yaml
-  backup:
-    volumes:
-      - backups:/backups
-      - ./ops/backup/rclone:/root/.config/rclone
-```
+### Проверка копии
 
-После включения внешнего хранилища имеет смысл пересмотреть ротацию: локальные
-копии можно хранить меньше, а внешние — дольше.
+`verify-restore.sh` скачивает последнюю копию **из хранилища**, сверяет
+контрольную сумму, восстанавливает её во временную базу и сверяет количество
+строк. Проверяется ровно тот артефакт, которым будут восстанавливаться, а не
+его локальный близнец. Запускается по воскресеньям.
+
+Отдельно прогонять «скачать и восстановить» вручную не нужно — скрипт делает
+это сам. Ручной сценарий в разделе про восстановление нужен, когда
+восстанавливают по делу, а не для проверки.
+
+Ротация задаётся `RETENTION_DAILY` / `RETENTION_WEEKLY` / `RETENTION_MONTHLY`
+и применяется **в хранилище**. Локально остаётся не больше `LOCAL_SAFETY_SETS`
+наборов — это страховка на случай затяжного сбоя выгрузки, а не хранилище
+копий.
 
 ---
 
@@ -282,25 +356,34 @@ docker compose exec backup rclone ls s3:notescout-backups/NoteScout-backend/dail
 
 | Ситуация | Действия |
 |---|---|
-| Бэкап не создался ночью | `docker compose logs backup`; проверить место (`df -h`); запустить `backup.sh` вручную |
-| Дамп повреждён, `pg_restore --list` падает | взять копию из `/weekly` или `/monthly` |
-| Копия есть, но `verify-restore` показывает расхождение | копия неполная — проверить следующую по свежести; если расходится всё, проблема в окружении: место на диске, права, версия клиента |
+| Бэкап не создался ночью | `docker compose ps backup` — при сбое контейнер `unhealthy`; затем `docker compose logs backup` и `cat /backups/last-failure`. Копия остаётся на диске, если выгрузка не удалась |
+| Дамп повреждён, `pg_restore --list` падает | взять копию из набора `weekly` или `monthly` в хранилище |
+| Копия есть, но `verify-restore` показывает расхождение | копия неполная — проверить следующую по свежести; если расходится всё, проблема в окружении: права, версия клиента, настройки хранилища |
 | Случайно удалили заметки | они удалены мягко: восстановить через `POST /api/v1/notes/{id}/restore`; если записей много — восстановить копию в отдельную базу и перенести данные |
 | Испортили данные миграцией | остановить API, восстановить копию, снятую перед обновлением |
 | Потерян `JWT_SECRET` | задать новый: пользователи просто войдут заново, данные не пострадают |
 | Потерян пароль `POSTGRES_PASSWORD` | он есть в `/opt/notescout/.env`; если утерян и там — восстановить том нельзя, нужен дамп |
+| Не выгружается в хранилище | проверить `S3_*` и `RCLONE_CONFIG_*` в `.env`, затем `docker compose exec backup rclone lsd notescout:` |
 
 ---
 
 ## Ограничения текущей схемы
 
-1. Копии лежат на том же диске, что и данные — нет защиты от отказа сервера.
-2. Нет уведомлений: об ошибке бэкапа видно только в логах контейнера
-   (`docker compose logs backup`).
+1. **Закрыто**: копии лежат только во внешнем хранилище, на диске сервера их
+   нет — потеря VPS данные не уносит. Локально остаются лишь наборы, которые
+   не удалось выгрузить.
+2. **Закрыто частично**: о сбое видно по healthcheck контейнера `backup`
+   (состояние `unhealthy`), в логах и в выводе недельного `verify-restore.sh`.
+   Внешнего алерта — письма или сообщения — по-прежнему нет: кто-то должен
+   посмотреть на состояние. Отдельная задача.
 3. Нет point-in-time recovery: восстанавливаемся на момент ночного дампа,
-   потеря — до суток.
-4. Конфигурация rclone не переживает пересоздание контейнера без монтирования
-   каталога.
-
-Первые три пункта закрываются внешним хранилищем, алертами и переходом на
-`pgBackRest`/WAL-G соответственно.
+   потеря — до суток. Закрывается переходом на `pgBackRest`/`WAL-G`.
+4. **Закрыто**: конфигурация rclone приходит переменными окружения и переживает
+   пересоздание контейнера.
+5. Вложения архивируются в каждую копию, а хранится их до 23 (7 + 4 + 12).
+   Теперь это расход места **в хранилище**, а не на диске сервера: 1 ГБ
+   вложений даёт около 23 ГБ. Следите за объёмом — у cloud.ru бесплатно 15 ГБ.
+   Если станет тесно, вложения стоит выгружать отдельной инкрементальной
+   синхронизацией, а не полным архивом в каждый набор.
+6. Восстановление требует доступа к хранилищу. Если оно недоступно, свежей
+   копии взять негде — но и данные при этом не теряются, они на диске сервера.

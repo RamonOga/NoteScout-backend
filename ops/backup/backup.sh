@@ -8,9 +8,17 @@
 #    3. считает контрольную сумму и снимок количества строк по таблицам;
 #    4. архивирует файлы вложений: они лежат не в базе, и без этого шага
 #       тексты заметок восстанавливались бы, а файлы — нет;
-#    5. раскладывает копию в недельный (вс) и месячный (1-е число) наборы;
-#    6. удаляет устаревшие копии по политике хранения;
-#    7. при настроенном S3_REMOTE выгружает копию во внешнее хранилище.
+#    5. выгружает набор во внешнее хранилище — daily всегда, weekly (вс)
+#       и monthly (1-е число) дополнительно;
+#    6. удаляет локальные файлы ТОЛЬКО после успешной выгрузки;
+#    7. чистит устаревшие наборы в хранилище по политике хранения.
+#
+#  Локальных копий намеренно не остаётся. Диск сервера конечен и делится с
+#  базой, а копия на том же диске от потери сервера не спасает — ровно за это
+#  и отвечает внешнее хранилище. Если выгрузка не удалась, набор остаётся на
+#  диске как последняя копия данных; о сбое сообщают отметка и healthcheck.
+#
+#  Хранилище обязательно: сохранять копии больше некуда.
 #
 #  Запуск вручную:
 #    docker compose exec backup /usr/local/bin/backup.sh
@@ -29,6 +37,18 @@ RETENTION_MONTHLY="${RETENTION_MONTHLY:-12}"
 S3_REMOTE="${S3_REMOTE:-}"
 S3_BUCKET="${S3_BUCKET:-}"
 S3_PREFIX="${S3_PREFIX:-notescout}"
+
+# Путь во внешнем хранилище. Пустая строка означает «хранилище не настроено»,
+# а это для нас отказ: копии живут только там.
+remote_path=""
+if [ -n "$S3_REMOTE" ] && [ -n "$S3_BUCKET" ]; then
+    remote_path="${S3_REMOTE}:${S3_BUCKET}/${S3_PREFIX}"
+fi
+
+# Сколько наборов разрешено оставить на диске. Локальные файлы — не копии,
+# а свидетельство неудачной выгрузки. Держим несколько: затяжной сбой не
+# должен забить диск, но и терять данные нельзя.
+LOCAL_SAFETY_SETS="${LOCAL_SAFETY_SETS:-3}"
 # Каталог файлов вложений. Пусто — шаг архивации пропускается: так копия
 # снимается и на установке, где вложений ещё нет.
 ATTACHMENTS_DIR="${ATTACHMENTS_DIR:-}"
@@ -47,7 +67,15 @@ fail() {
 : "${PGDATABASE:?переменная PGDATABASE не задана}"
 : "${PGUSER:?переменная PGUSER не задана}"
 
-mkdir -p "$BACKUP_DIR/daily" "$BACKUP_DIR/weekly" "$BACKUP_DIR/monthly"
+# Без хранилища сохранять некуда, и это ошибка, а не «сделаю копию на диск».
+# Молчаливая локальная копия выглядела бы как рабочий бэкап, не защищая ни от
+# чего: она лежит на том же диске, что и база.
+[ -n "$remote_path" ] \
+    || fail "внешнее хранилище не настроено (S3_REMOTE/S3_BUCKET пусты) — сохранять копии некуда"
+
+# Недельные и месячные наборы существуют только в хранилище: локально копий
+# больше не остаётся, поэтому и каталогов под них не нужно.
+mkdir -p "$BACKUP_DIR/daily"
 
 timestamp=$(date -u +%Y%m%dT%H%M%SZ)
 target="$BACKUP_DIR/daily/notescout-${timestamp}.dump"
@@ -59,12 +87,26 @@ attachments_tmp="${attachments_target}.part"
 # без счётчиков выглядит как рабочая копия: раньше verify-restore.sh на пустом
 # файле счётчиков «проходил» проверку, ничего не сверив.
 completed=no
+local_set_complete=no
 cleanup_partial() {
     if [ "$completed" != "yes" ]; then
-        rm -f "$target" "${target}.sha256" "${target}.counts" "$tmp"
-        rm -f "$attachments_target" "${attachments_target}.sha256" \
-            "${attachments_target}.counts" "$attachments_tmp"
-        log "Копия неполная — файлы удалены, чтобы не выглядели как рабочая копия"
+        if [ "$local_set_complete" = "yes" ]; then
+            # Набор собран целиком, но выгрузить его не удалось. Удалять
+            # нельзя: это последняя копия данных. О сбое сообщают отметка и
+            # healthcheck, а файлы дождутся следующей попытки.
+            log "Выгрузка не удалась — набор оставлен на диске как последняя копия"
+        else
+            rm -f "$target" "${target}.sha256" "${target}.counts" "$tmp"
+            rm -f "$attachments_target" "${attachments_target}.sha256" \
+                "${attachments_target}.counts" "$attachments_tmp"
+            log "Копия неполная — файлы удалены, чтобы не выглядели как рабочая копия"
+        fi
+
+        # Отметка о сбое — по ней healthcheck контейнера видит проблему.
+        # Без неё падение ночной копии остаётся только в логах: ровно так
+        # пустой PGSSLMODE четыре дня подряд валил cron, и выяснилось это
+        # случайно, при разговоре про хранилище.
+        date -u +%Y-%m-%dT%H:%M:%SZ > "$BACKUP_DIR/last-failure" 2>/dev/null || true
     fi
 }
 trap cleanup_partial EXIT INT TERM
@@ -125,133 +167,154 @@ if [ -n "$ATTACHMENTS_DIR" ]; then
     fi
 fi
 
+# Набор собран целиком. С этого момента сбой означает «не выгрузилось», а не
+# «копия битая», и локальные файлы нужно сохранить — см. cleanup_partial.
+local_set_complete=yes
+
 # ---------------------------------------------------------------------------
-#  Недельный и месячный наборы. cp -l создаёт жёсткую ссылку: файл один,
-#  а в каталогах он числится отдельно, поэтому место не удваивается.
+#  Выгрузка во внешнее хранилище.
+#
+#  Настройки хранилища приходят переменными окружения (RCLONE_CONFIG_*),
+#  поэтому `rclone config` запускать не нужно: см. docs/runbook-backup.md.
 # ---------------------------------------------------------------------------
-copy_into() {
+
+# Вспомогательные файлы (сумма, счётчики) выгружаем, но их отсутствие не
+# срывает копирование: дамп важнее. Однако и молчать нельзя — потерянные молча
+# счётчики означают, что проверять копию будет нечем.
+upload_file() {
     source_file="$1"
     destination_dir="$2"
-    cp -l "$source_file" "$destination_dir/" 2>/dev/null \
-        || cp "$source_file" "$destination_dir/"
+    [ -f "$source_file" ] || return 0
+    rclone copy "$source_file" "$destination_dir/" \
+        || log "ПРЕДУПРЕЖДЕНИЕ: не выгружен $(basename "$source_file")"
 }
 
-# Копия — это дамп и архив вложений вместе. Разложенные по разным наборам
-# по отдельности они бессмысленны: база без файлов и файлы без базы.
-copy_pair() {
+# Выгружает полный набор: дамп и архив вложений вместе с их суммами
+# и счётчиками. Именно полный: копия без счётчиков не проверяется,
+# а без контрольной суммы не проверяется на целостность.
+upload_set() {
     destination_dir="$1"
-    copy_into "$target" "$destination_dir"
-    copy_into "${target}.sha256" "$destination_dir"
-    copy_into "$counts_file" "$destination_dir"
 
+    rclone copy "$target" "$destination_dir/" || return 1
+    upload_file "${target}.sha256" "$destination_dir"
+    upload_file "$counts_file" "$destination_dir"
+
+    # Вложения выгружаем вместе с дампом: копия базы без файлов не спасёт —
+    # восстановить из неё заметки можно, а вложения нет.
     if [ -f "$attachments_target" ]; then
-        copy_into "$attachments_target" "$destination_dir"
-        copy_into "${attachments_target}.sha256" "$destination_dir"
-        copy_into "${attachments_target}.counts" "$destination_dir"
+        rclone copy "$attachments_target" "$destination_dir/" || return 1
+        upload_file "${attachments_target}.sha256" "$destination_dir"
+        upload_file "${attachments_target}.counts" "$destination_dir"
     fi
+    return 0
+}
+
+# Удаляет локальные файлы текущего набора: они были нужны, чтобы собрать
+# и выгрузить копию. Вызывается только после успешной выгрузки.
+remove_local_set() {
+    rm -f "$target" "${target}.sha256" "$counts_file" "$tmp"
+    rm -f "$attachments_target" "${attachments_target}.sha256" \
+        "${attachments_target}.counts" "$attachments_tmp"
+}
+
+# Политика хранения в хранилище: в наборе остаётся не больше N последних копий.
+#
+# Перечень берём у rclone: локального списка копий больше нет, а имя содержит
+# UTC-таймстамп фиксированной ширины, поэтому при LC_ALL=C сортировка по имени
+# совпадает с хронологической — на этом и построен отбор.
+prune_remote_set() {
+    set_name="$1"
+    keep="$2"
+
+    dumps=$(rclone lsf "${remote_path}/${set_name}/" 2>/dev/null \
+        | grep '\.dump$' | sort)
+    total=$(printf '%s\n' "$dumps" | grep -c . || true)
+    remove_count=$((total - keep))
+    [ "$remove_count" -gt 0 ] || return 0
+
+    printf '%s\n' "$dumps" | head -n "$remove_count" | while IFS= read -r name; do
+        [ -n "$name" ] || continue
+        stamp=$(printf '%s' "$name" | sed 's/^notescout-//; s/\.dump$//')
+
+        # Архив вложений носит тот же таймстамп, что и дамп, поэтому уходит
+        # вместе с ним. Иначе в наборе копились бы сироты.
+        for candidate in \
+            "notescout-${stamp}.dump" \
+            "notescout-${stamp}.dump.sha256" \
+            "notescout-${stamp}.dump.counts" \
+            "notescout-${stamp}-attachments.tar.gz" \
+            "notescout-${stamp}-attachments.tar.gz.sha256" \
+            "notescout-${stamp}-attachments.tar.gz.counts"
+        do
+            rclone deletefile "${remote_path}/${set_name}/${candidate}" \
+                >/dev/null 2>&1 || true
+        done
+        log "Удалена устаревшая копия из хранилища: ${name}"
+    done
+}
+
+# Страховка на случай затяжного сбоя выгрузки: если наборы всё-таки копятся
+# на диске, оставляем только несколько последних.
+prune_local_safety() {
+    total=0
+    for candidate in "$BACKUP_DIR/daily"/notescout-*.dump; do
+        [ -e "$candidate" ] || continue
+        total=$((total + 1))
+    done
+    remove_count=$((total - LOCAL_SAFETY_SETS))
+    [ "$remove_count" -gt 0 ] || return 0
+
+    index=0
+    for candidate in "$BACKUP_DIR/daily"/notescout-*.dump; do
+        [ -e "$candidate" ] || continue
+        index=$((index + 1))
+        [ "$index" -le "$remove_count" ] || break
+
+        stamp=$(basename "$candidate" .dump)
+        stamp=${stamp#notescout-}
+        rm -f "$candidate" "${candidate}.sha256" "${candidate}.counts"
+        rm -f "$BACKUP_DIR/daily/notescout-${stamp}-attachments.tar.gz" \
+            "$BACKUP_DIR/daily/notescout-${stamp}-attachments.tar.gz.sha256" \
+            "$BACKUP_DIR/daily/notescout-${stamp}-attachments.tar.gz.counts"
+        log "Удалён локальный остаток $(basename "$candidate")"
+    done
 }
 
 day_of_week=$(date -u +%u)   # 1..7, 7 — воскресенье
 day_of_month=$(date -u +%d)
 
+log "Выгружаю копию в ${remote_path}"
+upload_set "${remote_path}/daily" \
+    || fail "не удалось выгрузить копию в хранилище"
+
 if [ "$day_of_week" = "7" ]; then
-    copy_pair "$BACKUP_DIR/weekly"
+    upload_set "${remote_path}/weekly" \
+        || fail "не удалось выгрузить недельную копию"
     log "Копия добавлена в недельный набор"
 fi
 
 if [ "$day_of_month" = "01" ]; then
-    copy_pair "$BACKUP_DIR/monthly"
+    upload_set "${remote_path}/monthly" \
+        || fail "не удалось выгрузить месячную копию"
     log "Копия добавлена в месячный набор"
 fi
 
-# ---------------------------------------------------------------------------
-#  Политика хранения: в каждом наборе остаётся не больше N последних копий.
-#
-#  Обходимся без `ls` и без `find -printf`: в alpine это busybox, где `-printf`
-#  отсутствует, а разбор вывода `ls` ломается на необычных именах файлов.
-#  Маска раскрывается по возрастанию имени, а имя имеет вид
-#  notescout-20250601T030000Z.dump, поэтому первые (total - keep) элементов —
-#  самые старые копии.
-# ---------------------------------------------------------------------------
-prune() {
-    directory="$1"
-    keep="$2"
-    [ -d "$directory" ] || return 0
+prune_remote_set "daily" "$RETENTION_DAILY"
+prune_remote_set "weekly" "$RETENTION_WEEKLY"
+prune_remote_set "monthly" "$RETENTION_MONTHLY"
 
-    total=0
-    for candidate in "$directory"/notescout-*.dump; do
-        [ -e "$candidate" ] || continue
-        total=$((total + 1))
-    done
+remove_local_set
+log "Локальные файлы удалены: копия хранится в хранилище"
 
-    remove_count=$((total - keep))
-    [ "$remove_count" -gt 0 ] || return 0
-
-    index=0
-    for candidate in "$directory"/notescout-*.dump; do
-        [ -e "$candidate" ] || continue
-        index=$((index + 1))
-        [ "$index" -le "$remove_count" ] || break
-
-        # Архив вложений носит тот же таймстамп, что и дамп, поэтому уходит
-        # вместе с ним. Иначе каталог копий рос бы за счёт сирот.
-        stamp=$(basename "$candidate" .dump)
-        stamp=${stamp#notescout-}
-        attachments_candidate="$directory/notescout-${stamp}-attachments.tar.gz"
-
-        rm -f "$candidate" "${candidate}.sha256" "${candidate}.counts"
-        rm -f "$attachments_candidate" "${attachments_candidate}.sha256" \
-            "${attachments_candidate}.counts"
-        log "Удалена устаревшая копия $(basename "$candidate")"
-    done
-}
-
-prune "$BACKUP_DIR/daily" "$RETENTION_DAILY"
-prune "$BACKUP_DIR/weekly" "$RETENTION_WEEKLY"
-prune "$BACKUP_DIR/monthly" "$RETENTION_MONTHLY"
-
-# ---------------------------------------------------------------------------
-#  Внешнее хранилище. Пока S3_REMOTE пуст — копия лежит только на этом сервере.
-#  Чтобы включить выгрузку, задайте S3_REMOTE/S3_BUCKET в .env и настройте
-#  remote командой: docker compose exec backup rclone config
-# ---------------------------------------------------------------------------
-if [ -n "$S3_REMOTE" ] && [ -n "$S3_BUCKET" ]; then
-    remote_path="${S3_REMOTE}:${S3_BUCKET}/${S3_PREFIX}"
-    log "Выгружаю копию в ${remote_path}"
-
-    rclone copy "$target" "${remote_path}/daily/" \
-        || fail "не удалось выгрузить копию во внешнее хранилище"
-    rclone copy "${target}.sha256" "${remote_path}/daily/" || true
-    rclone copy "$counts_file" "${remote_path}/daily/" || true
-
-    # Вложения выгружаем вместе с дампом: внешняя копия базы без файлов
-    # не спасёт — восстановить из неё заметки можно, а вложения нет.
-    if [ -f "$attachments_target" ]; then
-        rclone copy "$attachments_target" "${remote_path}/daily/" \
-            || fail "не удалось выгрузить архив вложений во внешнее хранилище"
-        rclone copy "${attachments_target}.sha256" "${remote_path}/daily/" || true
-        rclone copy "${attachments_target}.counts" "${remote_path}/daily/" || true
-    fi
-
-    if [ "$day_of_week" = "7" ]; then
-        rclone copy "$target" "${remote_path}/weekly/" || log "ПРЕДУПРЕЖДЕНИЕ: недельная копия не выгружена"
-        if [ -f "$attachments_target" ]; then
-            rclone copy "$attachments_target" "${remote_path}/weekly/" \
-                || log "ПРЕДУПРЕЖДЕНИЕ: недельный архив вложений не выгружен"
-        fi
-    fi
-    if [ "$day_of_month" = "01" ]; then
-        rclone copy "$target" "${remote_path}/monthly/" || log "ПРЕДУПРЕЖДЕНИЕ: месячная копия не выгружена"
-        if [ -f "$attachments_target" ]; then
-            rclone copy "$attachments_target" "${remote_path}/monthly/" \
-                || log "ПРЕДУПРЕЖДЕНИЕ: месячный архив вложений не выгружен"
-        fi
-    fi
-else
-    log "Внешнее хранилище не настроено (S3_REMOTE пуст) — копия только на этом сервере"
-fi
+prune_local_safety
 
 # Только здесь копия считается состоявшейся: до этой строки любой сбой
-# приводит к удалению файлов обработчиком cleanup_partial.
+# приводит к удалению файлов обработчиком cleanup_partial (или к их сохранению,
+# если набор был собран целиком).
 completed=yes
+
+# Отметки для healthcheck: успех снимает отметку о сбое и ставит свою.
+rm -f "$BACKUP_DIR/last-failure"
+date -u +%Y-%m-%dT%H:%M:%SZ > "$BACKUP_DIR/last-success" 2>/dev/null || true
+
 log "Резервное копирование успешно завершено"
