@@ -12,7 +12,9 @@ BACKUP_CRON="${BACKUP_CRON:-0 3 * * *}"
 ENV_FILE="/etc/notescout-backup.env"
 CRONTAB_FILE="/etc/crontabs/root"
 
-mkdir -p "$BACKUP_DIR/daily" "$BACKUP_DIR/weekly" "$BACKUP_DIR/monthly"
+# Локально остаётся только staging для сборки копии перед выгрузкой:
+# недельные и месячные наборы существуют только в хранилище.
+mkdir -p "$BACKUP_DIR/daily"
 
 # ---------------------------------------------------------------------------
 #  cron не наследует окружение контейнера, поэтому сохраняем нужные переменные
@@ -24,7 +26,11 @@ umask 077
 for name in PGHOST PGPORT PGDATABASE PGUSER PGPASSWORD PGSSLMODE \
             BACKUP_DIR RETENTION_DAILY RETENTION_WEEKLY RETENTION_MONTHLY TZ \
             S3_REMOTE S3_BUCKET S3_PREFIX S3_TYPE S3_PROVIDER S3_ENDPOINT S3_REGION \
-            S3_ACCESS_KEY_ID S3_SECRET_ACCESS_KEY; do
+            S3_ACCESS_KEY_ID S3_SECRET_ACCESS_KEY \
+            RCLONE_CONFIG_NOTESCOUT_TYPE RCLONE_CONFIG_NOTESCOUT_PROVIDER \
+            RCLONE_CONFIG_NOTESCOUT_ACCESS_KEY_ID \
+            RCLONE_CONFIG_NOTESCOUT_SECRET_ACCESS_KEY \
+            RCLONE_CONFIG_NOTESCOUT_ENDPOINT RCLONE_CONFIG_NOTESCOUT_REGION; do
     value=""
     eval "value=\${$name:-}"
 

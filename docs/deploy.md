@@ -130,6 +130,30 @@ POSTGRES_PASSWORD=<пароль из первой команды>
 JWT_SECRET=<секрет из второй команды>
 ```
 
+**Обязательно задайте и внешнее хранилище** — копии живут только там, и без
+него `backup.sh` не запускается вовсе. Пример для cloud.ru:
+
+```dotenv
+S3_REMOTE=notescout
+S3_BUCKET=<имя бакета>
+S3_PREFIX=notescout
+S3_ENDPOINT=https://s3.cloud.ru
+S3_REGION=ru-central-1
+S3_ACCESS_KEY_ID=<ID тенанта>:<Key ID>
+S3_SECRET_ACCESS_KEY=<Key Secret>
+```
+
+Ключ доступа указывается **через двоеточие** — сначала ID тенанта, потом Key ID.
+Значения берутся в консоли провайдера. Подробности и настройка для других
+S3-совместимых сервисов — в [runbook-backup.md](runbook-backup.md).
+
+Проверьте доступ к хранилищу до первого запуска:
+
+```bash
+docker compose up -d backup
+docker compose exec backup rclone lsd notescout:
+```
+
 Остальные значения можно оставить по умолчанию — они описаны в `.env.example`
 и в [README](../README.md#переменные-окружения).
 
@@ -179,9 +203,12 @@ curl -s -G $API/notes -H "Authorization: Bearer $TOKEN" -d 'tag=smoke' | jq .tot
 
 ```bash
 docker compose logs backup | tail -20
-docker compose exec backup ls -lh /backups/daily
 
-# и главное — копия восстанавливается
+# копия легла в хранилище (локально их не остаётся — так и задумано)
+docker compose exec backup sh -c \
+  'rclone lsf "notescout:${S3_BUCKET}/${S3_PREFIX}/daily/" | grep "\.dump$" | sort | tail -3'
+
+# и главное — копия из хранилища восстанавливается
 docker compose exec backup /usr/local/bin/verify-restore.sh
 ```
 
